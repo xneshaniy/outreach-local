@@ -1,0 +1,42 @@
+# Apache reverse proxy -> Node.js app (StackCP / cPanel shared hosting)
+#
+# Place this .htaccess in the document root that Apache serves for your domain
+# (usually public_html, or the document root shown in Domains -> Domains).
+#
+# It forwards every request to the Node.js application running on 127.0.0.1:3000
+# and preserves the original Host header plus the X-Forwarded-* headers that
+# Next.js needs (APP_URL, CSRF origin checks, secure cookies).
+
+<IfModule mod_proxy.c>
+    RewriteEngine On
+
+    # Preserve the original host/proto so Next.js can build correct URLs.
+    RewriteCond %{HTTP_HOST} ^(.*)$ [NC]
+    RewriteRule ^.*$ - [E=HTTP_HOST:%1]
+    RewriteCond %{HTTPS} off
+    RewriteRule ^.*$ - [E=HTTPS:on]
+
+    # Do not proxy files we serve directly.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # WebSocket support (Next.js streaming responses).
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^.*$ ws://127.0.0.1:3000%{REQUEST_URI} [L]
+
+    # Everything else goes to the Node.js server.
+    ProxyPass        / http://127.0.0.1:3000/
+    ProxyPassReverse / http://127.0.0.1:3000/
+    ProxyTimeout 120
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Forwarded-Proto "https"
+    Header always set X-Forwarded-Port "443"
+</IfModule>
+
+# Keep logs out of the web root.
+<FilesMatch "\.(log|err\.log)$">
+    Require all denied
+</FilesMatch>
