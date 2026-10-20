@@ -19,6 +19,14 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(root, "deploy");
 
+/**
+ * Target platform hint.
+ *
+ * The bundle is usually built on the developer machine but uploaded to a
+ * Linux server. Native dependencies (the Prisma query engine) are platform
+ * specific, so the wrong ones crash the server on startup. The build script
+ * reports which engine ended up in the bundle.
+ */
 function run(cmd) {
   console.log(`> ${cmd}`);
   execSync(cmd, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
@@ -27,6 +35,60 @@ function run(cmd) {
 function copyDir(from, to) {
   fs.mkdirSync(to, { recursive: true });
   fs.cpSync(from, to, { recursive: true });
+}
+
+/**
+ * Native dependencies (the Prisma query engine) are platform specific.
+ *
+ * A bundle built on Windows contains the Windows engine and will NOT run on a
+ * Linux server. The reliable way to get a Linux bundle is to BUILD ON THE
+ * TARGET HOST (see scripts/build-on-host.sh) or to use Docker.
+ *
+ * This function only reports what the bundle contains so the operator is
+ * never surprised.
+ */
+function reportNativeBinaries() {
+  const clientDir = path.join(out, "server", "node_modules", ".prisma", "client");
+  if (!fs.existsSync(clientDir)) return;
+  const engines = fs
+    .readdirSync(clientDir)
+    .filter((f) => f.startsWith("query_engine") && f.endsWith(".node"))
+    .map((f) => f.replace("query_engine-", "").replace(".dll.node", ""));
+  if (engines.length === 0) return;
+
+  const buildPlatform = process.platform === "win32" ? "windows" : process.platform;
+  console.log(`    Prisma query engine in the bundle: ${engines.join(", ")}`);
+
+  if (engines.every((e) => e.startsWith(buildPlatform))) {
+    console.log("    -> matches the build platform.");
+  } else {
+    console.log("");
+    console.log("    !! The engine does NOT match this build platform.");
+    console.log("    !! If the server runs a different OS, rebuild the bundle ON THE SERVER:");
+    console.log("       cd ~/outreach && npm ci && npx prisma generate && npm run build:deploy");
+    console.log("");
+  }
+}
+
+/** Remove dev-only / platform-specific packages that bloat the upload. */
+function pruneBundle() {
+  const nm = path.join(out, "server", "node_modules");
+  const drop = [
+    "typescript", // dev-only
+    "sharp",
+    "@img", // native image tooling, not used by this app
+  ];
+  for (const pkg of drop) {
+    const p = path.join(nm, pkg);
+    if (fs.existsSync(p)) {
+      const size = fs
+        .readdirSync(p, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .reduce((sum, e) => sum + fs.statSync(path.join(e.parentPath ?? p, e.name)).size, 0);
+      fs.rmSync(p, { recursive: true, force: true });
+      console.log(`    pruned ${pkg} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+    }
+  }
 }
 
 console.log("==> Cleaning previous bundle");
@@ -59,6 +121,10 @@ copyDir(path.join(root, ".next", "static"), path.join(out, "server", ".next", "s
 if (fs.existsSync(path.join(root, "public"))) {
   copyDir(path.join(root, "public"), path.join(out, "server", "public"));
 }
+
+// 2b. Trim the upload size and report the native binaries.
+pruneBundle();
+reportNativeBinaries();
 
 // 3. Worker.
 copyDir(path.join(root, "dist", "worker"), path.join(out, "worker"));
@@ -113,53 +179,48 @@ fs.writeFileSync(
     "  start.sh     start/stop script using pm2 (for the SSH/pm2 route)",
     "  .env.example environment variables you must set",
     "",
-    "STEP 1 - UPLOAD",
-    "  Upload the CONTENTS of this folder to your account, e.g. ~/outreach",
-    "  (File Manager -> upload a ZIP and extract it, or FTP/SFTP).",
-    "",
-    "STEP 2 - ENVIRONMENT",
-    "  Copy .env.example to .env and fill in the values, or set them in the",
-    "  hosting panel (cPanel: 'Setup Node.js App' -> Environment variables):",
-    "    DATABASE_URL    = postgresql://user:pass@host:5432/db?sslmode=require&connect_timeout=60&pool_timeout=60",
-    "    AUTH_SECRET     = 64-char base64   (openssl rand -base64 64)",
-    "    ENCRYPTION_KEY  = 32-char base64   (openssl rand -base64 32)",
-    "    APP_URL         = https://outreach.growthleder.com",
-    "    PORT            = 3000",
-    "",
-    "STEP 3 - DATABASE MIGRATION (once)",
-    "  SSH into the account and run:",
+    "*** IMPORTANT: THE PRISMA QUERY ENGINE IS PLATFORM SPECIFIC ***",
+    "  If this bundle was built on Windows, the engine inside is the Windows",
+    "  one and the app will NOT start on a Linux server. Build the bundle ON",
+    "  THE SERVER instead:",
     "     cd ~/outreach",
-    "     npx prisma migrate deploy",
+    "     bash scripts/build-on-host.sh",
     "",
-    "STEP 4A - IF YOUR PANEL HAS 'Setup Node.js App' (cPanel)",
+    "RECOMMENDED ROUTE (works on any cPanel with SSH)",
+    "  1. Clone the repository (cPanel -> Git(TM) Version Control):",
+    "       Repository: https://github.com/xneshaniy/outreach-local.git",
+    "       Directory:  outreach",
+    "  2. SSH into the account and build:",
+    "       cd ~/outreach",
+    "       bash scripts/build-on-host.sh",
+    "  3. Create .env:",
+    "       cp .env.example .env      then edit the values",
+    "  4. Apply the database migration (once):",
+    "       npx prisma migrate deploy",
+    "  5. Start the app + the worker:",
+    "       npm install -g pm2        # if pm2 is missing",
+    "       bash deploy/start.sh",
+    "  6. Copy deploy/.htaccess into the DOCUMENT ROOT of the domain",
+    "     (Domains -> the domain -> Document Root, usually public_html).",
+    "     Apache then proxies every request to 127.0.0.1:3000.",
+    "  7. Verify:",
+    "       curl http://127.0.0.1:3000/api/health",
+    "       curl https://outreach.growthleder.com/api/health",
+    "",
+    "ALTERNATIVE ROUTE (cPanel 'Setup Node.js App' panel)",
     "  a) Create Application 1 (the web app):",
     "       Node.js version : 20.x or 22.x",
     "       Application mode : Production",
     "       Application root : outreach",
     "       Application URL  : server/server.js",
-    "     Add the environment variables from STEP 2, then 'Restart Application'.",
+    "     Add the environment variables, then 'Restart Application'.",
     "  b) Create Application 2 (the worker):",
     "       Application root : outreach",
     "       Application URL  : worker/index.cjs",
-    "     Same environment variables. The worker has no URL - it just runs.",
+    "     The worker has no URL - it just runs.",
     "  c) Domains -> point outreach.growthleder.com at Application 1.",
-    "",
-    "STEP 4B - IF THERE IS NO NODE.JS PANEL (use SSH + pm2)",
-    "  SSH into the account and run:",
-    "     cd ~/outreach",
-    "     curl -fsSL https://raw.githubusercontent.com/amannn/action-semantic-release/master/assets/amannn/action-semantic-release -o /dev/null 2>/dev/null; true",
-    "     npm install -g pm2          # if pm2 is not installed",
-    "     cp .env.example .env        # then edit it",
-    "     npx prisma migrate deploy",
-    "     chmod +x start.sh && ./start.sh",
-    "  Then copy .htaccess into the DOCUMENT ROOT of the domain in the panel",
-    "  (usually public_html, or the folder shown in Domains -> Document Root).",
-    "  Apache will then proxy every request to 127.0.0.1:3000.",
-    "",
-    "STEP 5 - VERIFY",
-    "     curl http://127.0.0.1:3000/api/health     -> {\"status\":\"ok\",...}",
-    "     curl https://outreach.growthleder.com/api/health",
-    "  Then log in at https://outreach.growthleder.com/login",
+    "  (With this route you must still build on the server, or the Prisma",
+    "   engine will not match the host OS.)",
     "",
     "NOTES",
     "  * This application requires PostgreSQL. MySQL is NOT supported.",
