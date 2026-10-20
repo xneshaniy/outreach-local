@@ -1,5 +1,5 @@
-import type { Campaign, CampaignRecipient, Contact, Prisma, SendJob, SenderAccount } from "@prisma/client";
-import { prisma } from "./db";
+import type { Campaign, CampaignRecipient, Contact, SendJob, SenderAccount } from "@prisma/client";
+import { dbRetry, prisma, type TxLike } from "./db";
 import { env } from "./env";
 
 /**
@@ -35,7 +35,7 @@ export function jobIdempotencyKey(campaignRecipientId: string): string {
  * Safe to call repeatedly — the unique constraints do the deduplication.
  */
 export async function enqueueJob(
-  tx: Prisma.TransactionClient,
+  tx: TxLike,
   input: { campaignRecipientId: string; campaignId: string; contactId: string; userId: string; scheduledAt: Date },
 ): Promise<SendJob> {
   const job = await tx.sendJob.upsert({
@@ -61,21 +61,26 @@ export async function enqueueJob(
  * Uses FOR UPDATE SKIP LOCKED so parallel workers claim disjoint sets.
  */
 export async function claimDueJobs(workerId: string, limit = env.workerBatchSize, leaseSeconds = env.workerLeaseSeconds): Promise<ClaimedJob[]> {
-  const claimed = await prisma.$queryRaw<Array<{ id: string }>>`
-    UPDATE "SendJob" AS j
-    SET "status" = 'CLAIMED',
-        "claimedAt" = now(),
-        "claimedBy" = ${workerId},
-        "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}),
-        "updatedAt" = now()
-    WHERE j.id IN (
-      SELECT id FROM "SendJob"
-      WHERE "status" = 'QUEUED' AND "scheduledAt" <= now()
-      ORDER BY "scheduledAt" ASC
-      LIMIT ${limit}
-      FOR UPDATE SKIP LOCKED
-    )
-    RETURNING j.id`;
+  // The claim is a single atomic UPDATE ... FOR UPDATE SKIP LOCKED, so a
+  // retry after a transient connection failure can never double-claim: the
+  // statement only matches rows that are still QUEUED.
+  const claimed = await dbRetry(() =>
+    prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE "SendJob" AS j
+      SET "status" = 'CLAIMED',
+          "claimedAt" = now(),
+          "claimedBy" = ${workerId},
+          "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}),
+          "updatedAt" = now()
+      WHERE j.id IN (
+        SELECT id FROM "SendJob"
+        WHERE "status" = 'QUEUED' AND "scheduledAt" <= now()
+        ORDER BY "scheduledAt" ASC
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING j.id`,
+  );
 
   if (claimed.length === 0) return [];
 
@@ -95,10 +100,12 @@ export async function claimDueJobs(workerId: string, limit = env.workerBatchSize
  * Extend the lease of a job currently being processed (long provider calls).
  */
 export async function heartbeatJob(jobId: string, leaseSeconds = env.workerLeaseSeconds): Promise<void> {
-  await prisma.$executeRaw`
-    UPDATE "SendJob"
-    SET "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}), "updatedAt" = now()
-    WHERE "id" = ${jobId} AND "status" = 'CLAIMED'`;
+  await dbRetry(() =>
+    prisma.$executeRaw`
+      UPDATE "SendJob"
+      SET "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}), "updatedAt" = now()
+      WHERE "id" = ${jobId} AND "status" = 'CLAIMED'`,
+  );
 }
 
 /**
@@ -108,45 +115,51 @@ export async function heartbeatJob(jobId: string, leaseSeconds = env.workerLease
  * Returns counts for observability.
  */
 export async function reclaimAbandonedJobs(): Promise<{ requeued: number; ambiguous: number }> {
-  const abandoned = await prisma.$queryRaw<Array<{ id: string }>>`
-    UPDATE "SendJob"
-    SET "status" = 'QUEUED',
-        "claimedBy" = NULL,
-        "leaseExpiresAt" = NULL,
-        "updatedAt" = now()
-    WHERE "status" = 'CLAIMED'
-      AND "leaseExpiresAt" IS NOT NULL
-      AND "leaseExpiresAt" < now()
-      AND "id" NOT IN (
-        SELECT "jobId" FROM "SendAttempt"
-        WHERE "finishedAt" IS NULL OR "status" = 'AMBIGUOUS'
-      )
-    RETURNING "id"`;
+  const abandoned = await dbRetry(() =>
+    prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE "SendJob"
+      SET "status" = 'QUEUED',
+          "claimedBy" = NULL,
+          "leaseExpiresAt" = NULL,
+          "updatedAt" = now()
+      WHERE "status" = 'CLAIMED'
+        AND "leaseExpiresAt" IS NOT NULL
+        AND "leaseExpiresAt" < now()
+        AND "id" NOT IN (
+          SELECT "jobId" FROM "SendAttempt"
+          WHERE "finishedAt" IS NULL OR "status" = 'AMBIGUOUS'
+        )
+      RETURNING "id"`,
+  );
 
   // Crashed mid-provider-call (or timed out): hold for reconciliation.
-  const ambiguous = await prisma.$queryRaw<Array<{ id: string }>>`
-    UPDATE "SendJob" AS j
-    SET "status" = 'AMBIGUOUS',
-        "ambiguousSince" = COALESCE(j."ambiguousSince", now()),
-        "claimedBy" = NULL,
-        "leaseExpiresAt" = NULL,
-        "updatedAt" = now()
-    WHERE j."status" = 'CLAIMED'
-      AND j."leaseExpiresAt" IS NOT NULL
-      AND j."leaseExpiresAt" < now()
-      AND j."id" IN (
-        SELECT "jobId" FROM "SendAttempt"
-        WHERE "finishedAt" IS NULL OR "status" = 'AMBIGUOUS'
-      )
-    RETURNING j."id"`;
+  const ambiguous = await dbRetry(() =>
+    prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE "SendJob" AS j
+      SET "status" = 'AMBIGUOUS',
+          "ambiguousSince" = COALESCE(j."ambiguousSince", now()),
+          "claimedBy" = NULL,
+          "leaseExpiresAt" = NULL,
+          "updatedAt" = now()
+      WHERE j."status" = 'CLAIMED'
+        AND j."leaseExpiresAt" IS NOT NULL
+        AND j."leaseExpiresAt" < now()
+        AND j."id" IN (
+          SELECT "jobId" FROM "SendAttempt"
+          WHERE "finishedAt" IS NULL OR "status" = 'AMBIGUOUS'
+        )
+      RETURNING j."id"`,
+  );
 
   // Also catch jobs already marked AMBIGUOUS with an unfinished attempt row.
-  await prisma.$executeRaw`
-    UPDATE "SendAttempt"
-    SET "finishedAt" = now(),
-        "reconciliationNote" = COALESCE("reconciliationNote", 'marked ambiguous by reclaimer')
-    WHERE "finishedAt" IS NULL
-      AND "jobId" IN (SELECT "id" FROM "SendJob" WHERE "status" = 'AMBIGUOUS')`;
+  await dbRetry(() =>
+    prisma.$executeRaw`
+      UPDATE "SendAttempt"
+      SET "finishedAt" = now(),
+          "reconciliationNote" = COALESCE("reconciliationNote", 'marked ambiguous by reclaimer')
+      WHERE "finishedAt" IS NULL
+        AND "jobId" IN (SELECT "id" FROM "SendJob" WHERE "status" = 'AMBIGUOUS')`,
+  );
 
   return { requeued: abandoned.length, ambiguous: ambiguous.length };
 }

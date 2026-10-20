@@ -103,7 +103,7 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
   return json({ ok: true, decision: body.decision });
 });
 
-async function settleIfHeld(tx: import("@prisma/client").Prisma.TransactionClient, senderAccountId: string, day: Date) {
+async function settleIfHeld(tx: import("@/lib/db").TxLike, senderAccountId: string, day: Date) {
   // The slot was held during AMBIGUOUS; convert it into a real send.
   const { settleSenderSlot } = await import("@/lib/quota");
   await settleSenderSlot(tx, senderAccountId, day);

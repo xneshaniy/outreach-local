@@ -13,6 +13,49 @@ The application has two runtime roles that share one image:
 You may run **multiple workers** concurrently; the queue is designed for it
 (atomic `FOR UPDATE SKIP LOCKED` claiming, per-job leases).
 
+> **Requires PostgreSQL.** MySQL is not supported — the schema uses enums,
+> partial unique indexes, `FOR UPDATE SKIP LOCKED` and `gen_random_uuid()`.
+> Managed PostgreSQL (Neon, Supabase, RDS) works; see
+> [Managed Postgres notes](#managed-postgres-neonsupabase) for the connection
+> settings that matter.
+
+---
+
+## 0. Quick path: shared hosting (cPanel / StackCP) without Docker
+
+If your host has **"Setup Node.js App"** (Node ≥ 20.9) you can deploy without
+Docker at all:
+
+```bash
+# 1. Build a self-contained bundle (server + worker + migrations)
+npm run build:deploy
+# -> produces ./deploy/  (a .env is stripped automatically)
+
+# 2. Upload the CONTENTS of deploy/ to your account, e.g. ~/outreach
+#    (File Manager or FTP)
+
+# 3. In the panel, create the Node.js application
+#      Application root:    outreach
+#      Startup file:        server/server.js
+#      Node version:        20.x or 22.x
+#    Add a SECOND application (or a background process / cron job) for the
+#    worker:
+#      Startup file:        worker/index.cjs
+
+# 4. Set the environment variables in the panel (see section 3)
+
+# 5. Run the migration ONCE over SSH
+cd ~/outreach && npx prisma migrate deploy
+
+# 6. Point outreach.growthleder.com at the Node.js application
+```
+
+`deploy/README.txt` repeats these steps inside the bundle.
+
+**If your host has no Node.js support** (typical PHP-only shared hosting), you
+cannot run this application there — deploy to Vercel, Railway, Render, Fly.io
+or a VPS instead.
+
 ---
 
 ## 1. Prerequisites
@@ -123,6 +166,55 @@ Use a process manager (systemd, PM2) so both roles restart on failure.
 - Pooled providers (PgBouncer, Neon, Supabase) are fine for the app. Use an
   unpooled connection for migrations; if your provider needs it, set `DIRECT_URL`
   and uncomment `directUrl` in `prisma/schema.prisma`.
+
+### Managed Postgres (Neon/Supabase)
+
+Two settings matter, because managed providers **suspend idle instances** and
+use a **transaction pooler**:
+
+| Problem                                            | Fix                                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `Can't reach database server` right after an idle period | Add `connect_timeout=30` (or more) to `DATABASE_URL`.                 |
+| `Timed out fetching a new connection from the connection pool` | Add `pool_timeout=30`; avoid double-pooling (Prisma pool + PgBouncer). |
+
+`src/lib/db.ts` injects `connect_timeout=60`, `pool_timeout=60` and
+`socket_timeout=60` automatically if they are missing, and retries transient
+connection errors (model operations and raw SQL) up to 3 times.
+
+**Recommended connection strings**
+
+```
+# Long-running Node server: use the DIRECT endpoint (no double pooling)
+postgresql://user:pass@host/db?sslmode=require&connect_timeout=60&pool_timeout=60
+
+# Serverless / many instances: use the POOLED endpoint with pgbouncer=true
+postgresql://user:pass@host-pooler/db?sslmode=require&connect_timeout=60&pgbouncer=true&connection_limit=5
+```
+
+**Use a separate database for the integration tests.** The test suite
+`TRUNCATE`s every table before each test, so pointing `TEST_DATABASE_URL` at
+the application database would delete your data.
+
+```bash
+# One-time: create the test database and migrate it
+psql "$DATABASE_URL" -c 'CREATE DATABASE outreach_test;'
+DATABASE_URL=".../outreach_test" npx prisma migrate deploy
+```
+
+### Session middleware and the Edge Runtime
+
+The middleware runs in the **Edge Runtime**, where `process.env` values are
+inlined at **build time**. It therefore does **not** verify the JWT signature
+(it only decodes the payload and checks `exp`). This is intentional:
+
+- It is a *convenience gate* (redirect pages to `/login`, return 401 for
+  `/api/*`).
+- **Every route handler re-validates the token signature and the
+  `sessionVersion` against the database** (`src/lib/auth/guards.ts`), so a
+  forged token can never reach data.
+
+This keeps the app working when the bundle is built on one machine and the
+secrets are injected on another — a common self-hosting scenario.
 
 ## 6. Health checks
 

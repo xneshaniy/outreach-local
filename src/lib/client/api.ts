@@ -36,6 +36,12 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
 
   if (!res.ok) {
     const err = (data as { error?: { code?: string; message?: string; details?: never } })?.error;
+    // The session is missing, expired or invalidated (sessionVersion bumped).
+    // Send the user back to the login page instead of showing a broken screen.
+    if (res.status === 401 && typeof window !== "undefined") {
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.assign(`/login?next=${next}`);
+    }
     throw new ApiClientError(
       res.status,
       err?.code ?? "UNKNOWN",

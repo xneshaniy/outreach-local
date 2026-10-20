@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { env } from "../env";
+import { SESSION_COOKIE } from "./constants";
 
 /**
  * Session management.
@@ -9,9 +10,13 @@ import { env } from "../env";
  * - `sessionVersion` is embedded in the token and checked against the DB row,
  *   so "log out everywhere"/account changes invalidate outstanding sessions.
  * - The token is never exposed to client-side JavaScript.
+ *
+ * NOTE: `SESSION_COOKIE` lives in `./constants` so that the Edge middleware can
+ * import it without pulling Node-only modules (dotenv/Prisma) into the edge
+ * bundle.
  */
 
-export const SESSION_COOKIE = "eop_session";
+export { SESSION_COOKIE };
 
 export type SessionPayload = {
   sub: string; // user id

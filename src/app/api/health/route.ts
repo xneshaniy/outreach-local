@@ -13,9 +13,20 @@ export async function GET() {
   let depth: Record<string, number> = {};
 
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    database = "up";
-    depth = await queueDepth();
+    // Managed Postgres (Neon, Supabase, ...) suspends idle instances; the first
+    // connection after a suspension can take a while. Retry briefly so a
+    // healthy-but-cold database is not reported as down.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        database = "up";
+        depth = await queueDepth();
+        break;
+      } catch (err) {
+        if (attempt === 2) throw err;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
   } catch {
     database = "down";
   }

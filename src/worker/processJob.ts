@@ -1,5 +1,5 @@
-import type { Prisma, SendAttempt } from "@prisma/client";
-import { prisma } from "../lib/db";
+import type { SendAttempt } from "@prisma/client";
+import { prisma, type TxLike } from "../lib/db";
 import { env } from "../lib/env";
 import { logger } from "../lib/logger";
 import { audit } from "../lib/audit";
@@ -178,7 +178,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   for (const account of accounts) {
     const cap = Math.min(account.dailyCap, env.senderDailyCapDefault);
     try {
-      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await prisma.$transaction(async (tx: TxLike) => {
         await reserveSenderSlot(tx, account.id, cap, quotaDay);
         await reserveCampaignSlot(tx, job.campaignId, job.campaign.dailyLimit, quotaDay);
         await tx.sendJob.update({
@@ -259,7 +259,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   // 8. Settle
   // ---------------------------------------------------------------------------
   if (outcome.kind === "ok") {
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await prisma.$transaction(async (tx: TxLike) => {
       await settleSenderSlot(tx, reservedFor!.id, quotaDay);
       await tx.sendAttempt.update({
         where: { id: attempt.id },
@@ -295,7 +295,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   if (outcome.kind === "transient") {
     const attempts = attemptNumber;
     const exhausted = attempts >= job.maxAttempts;
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await prisma.$transaction(async (tx: TxLike) => {
       await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
       await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
       await tx.sendAttempt.update({
@@ -338,7 +338,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   }
 
   // permanent
-  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+  await prisma.$transaction(async (tx: TxLike) => {
     await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
     await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
     await tx.sendAttempt.update({
@@ -485,7 +485,7 @@ export async function reconcileAmbiguousJob(job: ClaimedJob): Promise<"sent" | "
   const quotaDay = quotaDayKey(new Date(), env.senderQuotaTimezone);
 
   if (result === "sent") {
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await prisma.$transaction(async (tx: TxLike) => {
       await settleSenderSlot(tx, job.senderAccount!.id, quotaDay);
       if (latestAttempt) {
         await tx.sendAttempt.update({
@@ -511,7 +511,7 @@ export async function reconcileAmbiguousJob(job: ClaimedJob): Promise<"sent" | "
   }
 
   if (result === "not_sent") {
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await prisma.$transaction(async (tx: TxLike) => {
       await releaseSenderSlot(tx, job.senderAccount!.id, quotaDay);
       await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
       if (latestAttempt) {

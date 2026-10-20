@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Emit a self-contained server bundle in .next/standalone.
+  // Required by the Docker image and for deploying to shared hosting.
+  output: "standalone",
   // Prisma client is a native/Node dependency; keep it external to the server bundle.
   serverExternalPackages: ["@prisma/client", "bcryptjs", "googleapis", "nodemailer"],
   experimental: {

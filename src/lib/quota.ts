@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { TxLike } from "./db";
 import { getLocalParts } from "./scheduling";
 
 /**
@@ -24,7 +24,7 @@ export class QuotaExceededError extends Error {
   }
 }
 
-type Tx = Prisma.TransactionClient;
+type Tx = TxLike;
 
 /** UTC midnight of the quota day, computed in the given time zone. */
 export function quotaDayKey(date: Date, timeZone = process.env.SENDER_QUOTA_TIMEZONE ?? "UTC"): Date {

@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
+import type { PrismaClientWithRetry, TxLike } from "./db";
 
 /**
  * Append-only audit trail for security-relevant actions.
@@ -14,7 +15,7 @@ export type AuditInput = {
   userAgent?: string | null;
 };
 
-type DbLike = Prisma.TransactionClient | PrismaClient;
+type DbLike = TxLike | PrismaClientWithRetry;
 
 export async function audit(db: DbLike, input: AuditInput): Promise<void> {
   try {

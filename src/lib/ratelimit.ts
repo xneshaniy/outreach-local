@@ -1,4 +1,4 @@
-import { prisma } from "./db";
+import { dbRetry, prisma } from "./db";
 import { env } from "./env";
 import { ApiError } from "./errors";
 
@@ -13,12 +13,14 @@ export async function enforceRateLimit(key: string, max: number, windowSeconds: 
 
   const windowStart = new Date(Math.floor(Date.now() / (windowSeconds * 1000)) * windowSeconds * 1000);
 
-  const rows = await prisma.$queryRaw<Array<{ count: number }>>`
-    INSERT INTO "RateLimit" ("id", "key", "windowStart", "count", "createdAt")
-    VALUES (gen_random_uuid()::text, ${key}, ${windowStart}, 1, now())
-    ON CONFLICT ("key", "windowStart")
-    DO UPDATE SET "count" = "RateLimit"."count" + 1
-    RETURNING "count"`;
+  const rows = await dbRetry(() =>
+    prisma.$queryRaw<Array<{ count: number }>>`
+      INSERT INTO "RateLimit" ("id", "key", "windowStart", "count", "createdAt")
+      VALUES (gen_random_uuid()::text, ${key}, ${windowStart}, 1, now())
+      ON CONFLICT ("key", "windowStart")
+      DO UPDATE SET "count" = "RateLimit"."count" + 1
+      RETURNING "count"`,
+  );
 
   const count = rows[0]?.count ?? 1;
   if (count > max) {

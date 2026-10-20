@@ -1,0 +1,12 @@
+User-agent: *
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /campaigns
+Disallow: /contacts
+Disallow: /senders
+Disallow: /queue
+Disallow: /analytics
+Disallow: /audit
+Disallow: /suppressions
+Disallow: /templates
+Disallow: /settings

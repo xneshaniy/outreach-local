@@ -1,5 +1,4 @@
-import type { Prisma } from "@prisma/client";
-import { prisma } from "./db";
+import { dbRetry, prisma, type TxLike } from "./db";
 
 /**
  * Suppression handling (global + per-campaign).
@@ -46,7 +45,7 @@ export async function addSuppression(input: {
   campaignId?: string | null;
   reason: "UNSUBSCRIBE" | "BOUNCE" | "HARD_BOUNCE" | "COMPLAINT" | "MANUAL" | "LIST_UNSUBSCRIBE";
   source?: string;
-  tx?: Prisma.TransactionClient;
+  tx?: TxLike;
 }): Promise<{ created: boolean }> {
   const db = input.tx ?? prisma;
 
@@ -79,7 +78,10 @@ export async function addSuppression(input: {
     ON CONFLICT ${conflictTarget} DO NOTHING
   `;
 
-  const result = await db.$executeRawUnsafe(sql, ...values);
+  // Inside a transaction a failed statement aborts it, so retrying is not
+  // safe there — the caller retries the whole transaction instead.
+  const run = () => db.$executeRawUnsafe(sql, ...values);
+  const result = input.tx ? await run() : await dbRetry(run);
   // result is the number of rows inserted (1 if created, 0 if conflict)
   return { created: result > 0 };
 }
