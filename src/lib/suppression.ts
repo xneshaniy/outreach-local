@@ -1,6 +1,5 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
-import { logger } from "./logger";
 
 /**
  * Suppression handling (global + per-campaign).
