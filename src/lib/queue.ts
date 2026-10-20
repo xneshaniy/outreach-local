@@ -1,4 +1,11 @@
-import type { Campaign, CampaignRecipient, Contact, SendJob, SenderAccount } from "@prisma/client";
+import type {
+  Campaign,
+  CampaignRecipient,
+  Contact,
+  FollowUpMessage,
+  SendJob,
+  SenderAccount,
+} from "@prisma/client";
 import { dbRetry, prisma, type TxLike } from "./db";
 import { env } from "./env";
 
@@ -22,12 +29,18 @@ import { env } from "./env";
 export type ClaimedJob = SendJob & {
   campaign: Campaign;
   contact: Contact;
-  campaignRecipient: CampaignRecipient;
+  campaignRecipient: CampaignRecipient | null;
   senderAccount: SenderAccount | null;
+  followUpMessage: FollowUpMessage | null;
 };
 
 export function jobIdempotencyKey(campaignRecipientId: string): string {
   return `job:${campaignRecipientId}`;
+}
+
+/** Deterministic idempotency key for a follow-up message. */
+export function followUpIdempotencyKey(followUpMessageId: string): string {
+  return `followup:${followUpMessageId}`;
 }
 
 /**
@@ -51,6 +64,45 @@ export async function enqueueJob(
       idempotencyKey: jobIdempotencyKey(input.campaignRecipientId),
     },
     // Never reset an in-flight/terminal job; only future scheduling updates.
+    update: {},
+  });
+  return job;
+}
+
+/**
+ * Enqueue the job that delivers a follow-up message.
+ *
+ * The idempotency key is derived from the follow-up message id, so the same
+ * step can never be delivered twice — even if the scheduler runs twice.
+ */
+export async function enqueueFollowUpJob(
+  tx: TxLike,
+  input: {
+    followUpMessageId: string;
+    campaignId: string;
+    contactId: string;
+    userId: string;
+    scheduledAt: Date;
+    subject: string;
+    body: string;
+  },
+): Promise<SendJob> {
+  const key = followUpIdempotencyKey(input.followUpMessageId);
+  const job = await tx.sendJob.upsert({
+    where: { idempotencyKey: key },
+    create: {
+      campaignId: input.campaignId,
+      contactId: input.contactId,
+      userId: input.userId,
+      status: "QUEUED",
+      scheduledAt: input.scheduledAt,
+      maxAttempts: env.workerMaxAttempts,
+      idempotencyKey: key,
+      kind: "FOLLOW_UP",
+      followUpMessageId: input.followUpMessageId,
+      subject: input.subject,
+      body: input.body,
+    },
     update: {},
   });
   return job;
@@ -92,6 +144,7 @@ export async function claimDueJobs(workerId: string, limit = env.workerBatchSize
       contact: true,
       campaignRecipient: true,
       senderAccount: true,
+      followUpMessage: true,
     },
   }) as unknown as Promise<ClaimedJob[]>;
 }

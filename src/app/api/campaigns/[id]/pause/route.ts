@@ -4,6 +4,7 @@ import { handleApi, json, assertSameOrigin } from "@/lib/http";
 import { requireCampaign, requireUser } from "@/lib/auth/guards";
 import { ApiError } from "@/lib/errors";
 import { audit } from "@/lib/audit";
+import { cancelFollowUpsForCampaign } from "@/lib/followup";
 
 /** POST /api/campaigns/:id/pause — stops new sends; queued jobs are kept. */
 type Ctx = { params: Promise<{ id: string }> };
@@ -23,12 +24,16 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
     data: { status: "PAUSED", emergencyStopped: true },
   });
 
+  // Pausing must also stop the follow-up chain.
+  const cancelledFollowUps = await cancelFollowUpsForCampaign(campaign.id, "The campaign was paused.");
+
   await audit(prisma, {
     userId: user.id,
     action: "campaign.pause",
     entityType: "Campaign",
     entityId: campaign.id,
+    metadata: { followUpsCancelled: cancelledFollowUps },
   });
 
-  return json({ campaign: updated });
+  return json({ campaign: updated, followUpsCancelled: cancelledFollowUps });
 });

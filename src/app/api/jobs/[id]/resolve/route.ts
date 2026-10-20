@@ -54,8 +54,8 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
         });
       }
       await tx.sendJob.update({ where: { id: job.id }, data: { status: "SENT", ambiguousSince: null } });
-      await tx.campaignRecipient.update({
-        where: { id: job.campaignRecipientId },
+      await tx.campaignRecipient.updateMany({
+        where: { id: job.campaignRecipientId ?? "" },
         data: { status: "SENT", sentAt: new Date() },
       });
       await tx.contact.update({
@@ -79,8 +79,8 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
       }
       if (body.decision === "drop") {
         await tx.sendJob.update({ where: { id: job.id }, data: { status: "FAILED", ambiguousSince: null } });
-        await tx.campaignRecipient.update({
-          where: { id: job.campaignRecipientId },
+        await tx.campaignRecipient.updateMany({
+          where: { id: job.campaignRecipientId ?? "" },
           data: { status: "FAILED", failedAt: new Date(), lastError: body.note ?? "Dropped after ambiguous outcome." },
         });
       } else {

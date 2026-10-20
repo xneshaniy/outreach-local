@@ -39,6 +39,13 @@ const schema = z.object({
   RATE_LIMIT_API_MAX: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_API_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
 
+  // Global dry run: no email ever leaves the machine. Individual campaigns
+  // can also be put in dry-run mode.
+  DRY_RUN: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().optional(),
@@ -96,6 +103,10 @@ export const env = {
   rateLimitAuthWindowSeconds: e.RATE_LIMIT_AUTH_WINDOW_SECONDS,
   rateLimitApiMax: e.RATE_LIMIT_API_MAX,
   rateLimitApiWindowSeconds: e.RATE_LIMIT_API_WINDOW_SECONDS,
+
+  // Delivery ---------------------------------------------------------------
+  /** When true, no email is ever handed to a provider. */
+  dryRun: e.DRY_RUN,
 
   // Google ------------------------------------------------------------------
   googleClientId: e.GOOGLE_CLIENT_ID ?? "",

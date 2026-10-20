@@ -42,7 +42,71 @@ queue, rate limiter, idempotency store and quota accounting all live in PostgreS
 | Edge middleware | `src/middleware.ts` | Redirects unauthenticated page requests to `/login`; returns 401 JSON for `/api/*` |
 | Worker | `src/worker/index.ts` → `src/worker/processJob.ts` | Claims and sends jobs; crash recovery; ambiguity reconciliation |
 | Database | `prisma/schema.prisma` | Single source of truth, including all uniqueness/idempotency constraints |
+| Service profiles | `src/lib/services.ts` | One profile per business line; campaigns/templates/sequences link to one. |
+| Follow-up engine | `src/lib/followup.ts` | Schedules the next step after a delivery; cancels on reply/unsubscribe/bounce/pause. |
+| Reply tracking | `src/lib/replies.ts`, `src/lib/email/reply-poller.ts` | Matches a reply to a contact + campaign and applies its side effects. |
+| Personalisation analysis | `src/lib/personalization.ts` | Reports which template variables the audience cannot fill in. |
+| Dry-run provider | `src/lib/email/dry-run.ts` | Renders a message without contacting a provider. |
 | Client helper | `src/lib/client/api.ts` | Browser-side fetch wrapper (`apiFetch`) |
+
+## 1b. Feature pipeline: services, follow-ups, replies, dry run
+
+### Service profiles
+A `Service` is one business line (lead generation, virtual assistance, CRM
+automation, email outreach, e-commerce). It carries the description, target
+industries, ideal customer profile, default subject/body and call to action.
+`Campaign`, `EmailTemplate` and `FollowUpSequence` reference it with
+`ON DELETE SET NULL`, so removing a service never deletes work.
+
+### Follow-up sequences
+`FollowUpSequence` -> `FollowUpStep` (position, delay in days, subject, body).
+
+The scheduler is **pull-based and durable**:
+
+1. The campaign references a sequence (`Campaign.followUpSequenceId`).
+2. After the first email of that campaign is **accepted by the provider**, the
+   worker calls `advanceFollowUp()`, which finds the first step with no
+   message for that contact and calls `scheduleNextFollowUp()`.
+3. `scheduleNextFollowUp()` re-checks eligibility (contact status, suppression
+   list, frequency limit), computes `now + delayDays` and clamps the result
+   into the **recipient's own local sending window**, then writes a
+   `FollowUpMessage` and a `SendJob` of kind `FOLLOW_UP`.
+4. The job's idempotency key is `followup:<followUpMessageId>`, so the same
+   step can never be delivered twice.
+
+Cancellation is central, not best-effort: `cancelFollowUpsForContact`,
+`cancelFollowUpsForCampaign` and `cancelFollowUpsForContactEverywhere` flip
+the pending messages to `CANCELLED` **and** cancel their queued jobs. They run
+when a contact replies, unsubscribes, bounces, complains, is manually
+suppressed, or when the campaign is paused / cancelled / archived.
+
+### Reply handling
+A reply is matched to a contact by the normalised sender address and to a
+campaign by the most recent `SENT` job for that contact. Recording it:
+
+- marks the contact `REPLIED` (unless it is unsubscribed/bounced/complained),
+- increments `repliedCount` and sets `lastRepliedAt`,
+- cancels the contact's queued jobs (never email somebody who answered),
+- cancels the contact's pending follow-ups.
+
+Gmail accounts are polled with the real API (`users.messages.list` +
+`users.messages.get`) using the refresh token granted at connect time — the
+`gmail.readonly` scope is requested for exactly this. SMTP accounts cannot be
+polled; that limitation is reported in the API response (`pollSupported`) and
+shown in the UI rather than hidden.
+
+### Dry run
+`DRY_RUN=true` (environment) or `Campaign.dryRun` (per campaign) swaps the
+provider for `dryRunProvider`. The pipeline is otherwise identical, but:
+
+- no provider call is made,
+- the quota is **not** reserved (a test must not eat the real budget),
+- the job is marked `dryRun` and its provider message id is prefixed
+  `dry-run:` so the UI can say plainly that nothing was delivered,
+- no follow-up is scheduled (the chain only starts after a real delivery).
+
+New campaigns are created in dry-run mode, so a fresh install cannot send
+anything until the operator turns it off.
 
 ## 2. Request flow
 

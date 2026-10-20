@@ -11,10 +11,13 @@ import { useEffect, useState } from "react";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: "◧" },
+  { href: "/services", label: "Services", icon: "◆" },
   { href: "/campaigns", label: "Campaigns", icon: "✉" },
   { href: "/contacts", label: "Contacts", icon: "☺" },
   { href: "/senders", label: "Sender accounts", icon: "@" },
   { href: "/templates", label: "Templates", icon: "✎" },
+  { href: "/follow-ups", label: "Follow-ups", icon: "↻" },
+  { href: "/replies", label: "Replies", icon: "↩" },
   { href: "/queue", label: "Send queue", icon: "⇄" },
   { href: "/analytics", label: "Analytics", icon: "▤" },
   { href: "/suppressions", label: "Suppressions", icon: "⊘" },

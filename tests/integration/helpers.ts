@@ -73,7 +73,41 @@ export async function createTestCampaign(userId: string, overrides: Partial<Reco
       body: (overrides.body as string) ?? "<p>Hello {{first_name}}</p>",
       status: (overrides.status as "DRAFT" | "ACTIVE" | "PAUSED") ?? "DRAFT",
       ...(overrides.dailyLimit !== undefined ? { dailyLimit: overrides.dailyLimit as number } : {}),
+      ...(overrides.dryRun !== undefined ? { dryRun: overrides.dryRun as boolean } : {}),
+      ...(overrides.serviceId !== undefined ? { serviceId: overrides.serviceId as string } : {}),
+      ...(overrides.followUpSequenceId !== undefined
+        ? { followUpSequenceId: overrides.followUpSequenceId as string }
+        : {}),
+      ...(overrides.requiresApproval !== undefined
+        ? { requiresApproval: overrides.requiresApproval as boolean }
+        : {}),
+      ...(overrides.windowStartMinute !== undefined
+        ? { windowStartMinute: overrides.windowStartMinute as number }
+        : {}),
+      ...(overrides.windowEndMinute !== undefined
+        ? { windowEndMinute: overrides.windowEndMinute as number }
+        : {}),
+      ...(overrides.sendingDays !== undefined
+        ? { sendingDays: overrides.sendingDays as number[] }
+        : {}),
     },
+  });
+}
+
+/**
+ * A campaign whose sending window covers every minute of every day.
+ *
+ * Tests that exercise the worker must not depend on the wall clock: with the
+ * default 09:00-17:00 window the job is correctly rescheduled to the next
+ * morning when the test runs in the evening.
+ */
+export async function createAlwaysOnCampaign(userId: string, overrides: Partial<Record<string, unknown>> = {}) {
+  return createTestCampaign(userId, {
+    status: "ACTIVE",
+    windowStartMinute: 0,
+    windowEndMinute: 1439,
+    sendingDays: [0, 1, 2, 3, 4, 5, 6],
+    ...overrides,
   });
 }
 

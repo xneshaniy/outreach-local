@@ -38,6 +38,8 @@ const campaignBody = z.object({
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(200_000),
   templateId: z.string().cuid().nullish(),
+  serviceId: z.string().cuid().nullish(),
+  followUpSequenceId: z.string().cuid().nullish(),
   fromName: z.string().max(200).nullish(),
   replyTo: z.string().email().max(320).nullish(),
   windowStartMinute: z.number().int().min(0).max(1439).default(540),
@@ -52,6 +54,8 @@ const campaignBody = z.object({
   dailyLimit: z.number().int().min(1).max(100_000).nullish(),
   startAt: z.coerce.date().nullish(),
   endAt: z.coerce.date().nullish(),
+  requiresApproval: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
 });
 
 export const campaignCreateSchema = campaignBody.superRefine((v, ctx) => {
@@ -95,6 +99,7 @@ export const scheduleSchema = z
 // ---------------------------------------------------------------------------
 // Contacts & import
 // ---------------------------------------------------------------------------
+
 export const contactCreateSchema = z.object({
   email: z.string().email().max(320),
   firstName: z.string().max(200).nullish(),
@@ -108,9 +113,14 @@ export const contactCreateSchema = z.object({
     .nullish()
     .transform((tz) => (tz ? normalizeTimeZone(tz) : null)),
   country: z.string().max(100).nullish(),
+  source: z.string().max(200).nullish(),
+  notes: z.string().max(5000).nullish(),
+  tags: z.array(z.string().min(1).max(60)).max(50).nullish(),
   consentAt: z.coerce.date().nullish(),
   consentSource: z.string().max(200).nullish(),
 });
+
+export const contactUpdateSchema = contactCreateSchema.partial().omit({ email: true });
 
 export const importMappingSchema = z.object({
   campaignId: z.string().cuid().optional(),
@@ -155,4 +165,60 @@ export const senderSettingsSchema = z.object({
 export const unsubscribeSchema = z.object({
   token: z.string().min(10).max(2000),
   reason: z.string().max(500).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Service profiles
+// ---------------------------------------------------------------------------
+
+export const serviceCreateSchema = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().max(5000).nullish(),
+  targetIndustries: z.array(z.string().min(1).max(120)).max(30).default([]),
+  idealCustomerProfile: z.string().max(5000).nullish(),
+  defaultSubject: z.string().max(500).nullish(),
+  defaultBody: z.string().max(200_000).nullish(),
+  defaultCta: z.string().max(500).nullish(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "Colour must be a hex value like #6366f1.")
+    .default("#6366f1"),
+  isActive: z.boolean().default(true),
+});
+
+export const serviceUpdateSchema = serviceCreateSchema.partial();
+
+// ---------------------------------------------------------------------------
+// Follow-up sequences
+// ---------------------------------------------------------------------------
+
+const followUpStepSchema = z.object({
+  order: z.number().int().min(1).max(50),
+  delayDays: z.number().int().min(0).max(365).default(3),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(200_000),
+});
+
+export const followUpSequenceCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  serviceId: z.string().cuid().nullish(),
+  isActive: z.boolean().default(true),
+  steps: z.array(followUpStepSchema).min(1).max(20),
+});
+
+export const followUpSequenceUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  serviceId: z.string().cuid().nullish(),
+  isActive: z.boolean().optional(),
+  steps: z.array(followUpStepSchema).min(1).max(20).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Replies
+// ---------------------------------------------------------------------------
+
+export const replyUpdateSchema = z.object({
+  isRead: z.boolean().optional(),
+  outcome: z.enum(["INTERESTED", "NOT_INTERESTED", "NEEDS_INFO", "OTHER"]).nullish(),
+  contactId: z.string().cuid().nullish(),
 });

@@ -72,7 +72,6 @@ jobs:
           for i in {1..30}; do
             if pg_isready -h localhost -p 5432 -U postgres -d outreach_test; then
               echo "PostgreSQL is ready and accepting connections"
-              # Test actual connection
               PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d outreach_test -c "SELECT 1;" && break
             fi
             echo "Waiting for PostgreSQL... ($i/30)"

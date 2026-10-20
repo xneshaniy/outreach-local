@@ -47,6 +47,7 @@ enum CampaignStatus {
   PAUSED
   COMPLETED
   CANCELLED
+  ARCHIVED
 }
 
 enum RecipientStatus {
@@ -89,6 +90,8 @@ enum ContactStatus {
   BOUNCED
   COMPLAINED
   INVALID
+  REPLIED // the contact replied to an outreach message
+  INTERESTED // the contact replied and asked for more (manually marked)
 }
 
 enum SuppressionScope {
@@ -124,6 +127,20 @@ enum WebhookStatus {
   INVALID_SIGNATURE
 }
 
+enum FollowUpStatus {
+  SCHEDULED // waiting for its turn
+  SENDING // claimed by a worker
+  SENT // the provider accepted it
+  FAILED // permanent failure
+  CANCELLED // cancelled (replied, unsubscribed, bounced, campaign paused)
+  SKIPPED // skipped (suppressed, ineligible, outside the window)
+}
+
+enum SendJobKind {
+  ORIGINAL // the campaign's first message
+  FOLLOW_UP // a follow-up sequence step
+}
+
 // ---------------------------------------------------------------------------
 // Core models
 // ---------------------------------------------------------------------------
@@ -150,6 +167,10 @@ model User {
   webhookEvents    WebhookEvent[]
   unsubscribeEvents UnsubscribeEvent[]
   idempotencyKeys  IdempotencyKey[]
+  services         Service[]
+  followUpSequences FollowUpSequence[]
+  followUpMessages  FollowUpMessage[]
+  replies           Reply[]
 }
 
 model SenderAccount {
@@ -187,6 +208,7 @@ model SenderAccount {
   dailyUsage  SenderDailyUsage[]
   sendJobs    SendJob[]
   sendAttempts SendAttempt[]
+  replies     Reply[]
 
   @@unique([userId, email])
   @@index([userId, status])
@@ -200,10 +222,48 @@ model EmailTemplate {
   subject     String
   body        String
   description String?
+  // Optional link to a service profile (so one workspace can keep a separate
+  // template set per business line).
+  serviceId   String?
+  service     Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   campaigns Campaign[]
+
+  @@index([userId, serviceId])
+}
+
+// ---------------------------------------------------------------------------
+// Service profiles — one per business line offered by the workspace
+// (lead generation, virtual assistance, CRM automation, e-commerce, ...).
+// ---------------------------------------------------------------------------
+
+model Service {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  // Free-form: target industries, ideal customer profile, default CTA.
+  targetIndustries      String[] @default([])
+  idealCustomerProfile  String?
+  defaultSubject        String?
+  defaultBody           String?
+  defaultCta            String?
+  color                 String   @default("#6366f1")
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  campaigns  Campaign[]
+  templates  EmailTemplate[]
+  sequences  FollowUpSequence[]
+
+  // One service per (workspace, slug).
+  @@unique([userId, slug])
+  @@index([userId, isActive])
 }
 
 model Contact {
@@ -222,23 +282,35 @@ model Contact {
   timeZone        String?
   country         String?
   customFields    Json?
+  // Where the lead came from (referral, linkedin, webinar, ...).
+  source          String?
+  // Free-form notes shown on the contact page.
+  notes           String?
+  // Labels for segmentation ("saas", "agency", "high-value", ...).
+  tags            String[]      @default([])
   status          ContactStatus @default(ACTIVE)
   // Lawful basis / consent tracking.
   consentAt      DateTime?
   consentSource  String?
   lastSentAt     DateTime?
   sentCount      Int            @default(0)
+  // Reply tracking (set when a reply is received for this contact).
+  lastRepliedAt  DateTime?
+  repliedCount   Int            @default(0)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
   campaignRecipients CampaignRecipient[]
   sendJobs           SendJob[]
   unsubscribeEvents  UnsubscribeEvent[]
+  followUpMessages   FollowUpMessage[]
+  replies            Reply[]
 
   // One contact per user per normalized email — enforced by the database.
   @@unique([userId, emailNormalized])
   @@index([userId, status])
   @@index([userId, createdAt])
+  @@index([userId, source])
 }
 
 model Campaign {
@@ -252,9 +324,28 @@ model Campaign {
   // Snapshot of the message body at campaign level (auditable even if the template changes).
   body     String
 
+  // The business line this campaign promotes.
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
   status          CampaignStatus @default(DRAFT)
   // Emergency stop: worker refuses to send for this campaign until resumed.
   emergencyStopped Boolean       @default(false)
+  // Archived campaigns are hidden from the default list but keep all history.
+  isArchived      Boolean        @default(false)
+
+  // Manual approval gate: the campaign cannot start until it is approved.
+  requiresApproval Boolean  @default(false)
+  approvedAt       DateTime?
+  approvedBy       String?
+
+  // Dry run: the worker renders the message and marks it delivered WITHOUT
+  // contacting the provider. Used to validate configuration before going live.
+  dryRun Boolean @default(false)
+
+  // Optional follow-up sequence triggered after the first email is sent.
+  followUpSequenceId String?
+  followUpSequence   FollowUpSequence? @relation(fields: [followUpSequenceId], references: [id], onDelete: SetNull)
 
   // Recipient-local sending window (minutes from local midnight). Default 09:00–17:00.
   windowStartMinute Int @default(540)
@@ -284,6 +375,8 @@ model Campaign {
   suppressions   Suppression[]
   importBatches  ImportBatch[]
   unsubscribeEvents UnsubscribeEvent[]
+  followUpMessages FollowUpMessage[]
+  replies          Reply[]
 
   @@index([userId, status])
   @@index([status])
@@ -320,13 +413,23 @@ model CampaignRecipient {
 
 model SendJob {
   id                   String            @id @default(cuid())
-  campaignRecipientId  String            @unique
-  campaignRecipient    CampaignRecipient @relation(fields: [campaignRecipientId], references: [id], onDelete: Cascade)
+  // Nullable: follow-up messages do not belong to a campaign recipient.
+  // Still UNIQUE, so there is at most one job per recipient.
+  campaignRecipientId  String?           @unique
+  campaignRecipient    CampaignRecipient? @relation(fields: [campaignRecipientId], references: [id], onDelete: Cascade)
   campaignId           String
   campaign             Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   contactId            String
   contact              Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
   userId               String
+  // ORIGINAL = the campaign's first message; FOLLOW_UP = a follow-up step.
+  kind                 SendJobKind       @default(ORIGINAL)
+  // Set for follow-up jobs: the follow-up message this job delivers.
+  followUpMessageId    String?           @unique
+  followUpMessage      FollowUpMessage?  @relation(fields: [followUpMessageId], references: [id], onDelete: Cascade)
+  // Subject/body override the campaign defaults (used by follow-ups).
+  subject              String?
+  body                 String?
 
   status     JobStatus     @default(QUEUED)
   // When the job may be claimed (respects recipient-local window; reused for retry backoff).
@@ -351,6 +454,8 @@ model SendJob {
   idempotencyKey String @unique
   // Set when a provider call timed out after submission (outcome unknown).
   ambiguousSince DateTime?
+  // Dry run: the message was rendered but never handed to a provider.
+  dryRun Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -534,4 +639,120 @@ model IdempotencyKey {
 
   @@unique([userId, key])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up sequences
+//
+// A sequence is a list of steps ("day 3 bump", "day 7 last call"). After the
+// first email of a campaign is accepted by the provider, the next step is
+// scheduled for each recipient. Every step is cancelled automatically when
+// the contact becomes ineligible (replied, unsubscribed, bounced, complained)
+// or when the campaign is paused/cancelled.
+// ---------------------------------------------------------------------------
+
+model FollowUpSequence {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The business line this sequence belongs to (optional).
+  serviceId  String?
+  service    Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  name       String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  steps    FollowUpStep[]
+  messages FollowUpMessage[]
+  campaigns Campaign[]
+
+  @@index([userId, isActive])
+}
+
+model FollowUpStep {
+  id         String   @id @default(cuid())
+  sequenceId String
+  sequence   FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  // Position in the sequence (1-based).
+  order      Int
+  // Days after the previous message was sent.
+  delayDays  Int      @default(3)
+  subject    String
+  body       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  messages FollowUpMessage[]
+
+  // One step per position within a sequence.
+  @@unique([sequenceId, order])
+}
+
+model FollowUpMessage {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sequenceId String
+  sequence   FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  stepId     String
+  step       FollowUpStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId  String
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  // The job that delivers this follow-up (the job holds the foreign key).
+  job        SendJob?
+
+  scheduledAt   DateTime
+  status        FollowUpStatus @default(SCHEDULED)
+  sentAt        DateTime?
+  failureReason String?
+  // Set when the follow-up was cancelled because the contact became ineligible.
+  cancelReason  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status, scheduledAt])
+  @@index([contactId])
+  @@index([campaignId])
+  @@index([userId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Replies
+//
+// Received messages are matched to a contact (by the From address) and to a
+// campaign (by the most recent message we sent to that contact). A reply
+// automatically stops the follow-up sequence for that contact.
+// ---------------------------------------------------------------------------
+
+model Reply {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignId      String?
+  campaign        Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contactId       String?
+  contact         Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  senderAccountId String?
+  senderAccount   SenderAccount? @relation(fields: [senderAccountId], references: [id], onDelete: SetNull)
+  // Provider message id — unique per (workspace, provider) for idempotency.
+  provider        String
+  messageId       String
+  fromEmail       String
+  toEmail         String
+  subject         String?
+  snippet         String?
+  body            String?
+  receivedAt      DateTime
+  isRead          Boolean  @default(false)
+  // Set when a human classified the reply (INTERESTED, NOT_INTERESTED, ...).
+  outcome         String?
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, provider, messageId])
+  @@index([userId, receivedAt])
+  @@index([userId, isRead])
+  @@index([contactId])
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -31,9 +31,13 @@ type Contact = {
   title: string | null;
   timeZone: string | null;
   country: string | null;
-  status: "ACTIVE" | "UNSUBSCRIBED" | "BOUNCED" | "COMPLAINED" | "INVALID";
+  source: string | null;
+  notes: string | null;
+  tags: string[];
+  status: "ACTIVE" | "UNSUBSCRIBED" | "BOUNCED" | "COMPLAINED" | "INVALID" | "REPLIED" | "INTERESTED";
   sentCount: number;
   lastSentAt: string | null;
+  lastRepliedAt: string | null;
   createdAt: string;
 };
 
@@ -42,9 +46,18 @@ type ContactsResponse = {
   page: number;
   pageSize: number;
   items: Contact[];
+  sources?: (string | null)[];
 };
 
-const STATUS_OPTIONS = ["ACTIVE", "UNSUBSCRIBED", "BOUNCED", "COMPLAINED", "INVALID"] as const;
+const STATUS_OPTIONS = [
+  "ACTIVE",
+  "REPLIED",
+  "INTERESTED",
+  "UNSUBSCRIBED",
+  "BOUNCED",
+  "COMPLAINED",
+  "INVALID",
+] as const;
 
 const EMPTY_FORM = {
   email: "",
@@ -55,6 +68,9 @@ const EMPTY_FORM = {
   title: "",
   timeZone: "",
   country: "",
+  source: "",
+  tags: "",
+  notes: "",
 };
 
 export default function ContactsPage() {
@@ -66,6 +82,7 @@ export default function ContactsPage() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [source, setSource] = useState("");
   const [page, setPage] = useState(1);
 
   // Add contact modal
@@ -90,26 +107,51 @@ export default function ContactsPage() {
     const params = new URLSearchParams({ page: String(page), pageSize: "20" });
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (status) params.set("status", status);
+    if (source) params.set("source", source);
     api<ContactsResponse>(`/api/contacts?${params.toString()}`)
       .then((d) => {
         setData(d);
         setLoadError(null);
       })
       .catch((err) => setLoadError(errorMessage(err)));
-  }, [page, debouncedSearch, status]);
+  }, [page, debouncedSearch, status, source]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const exportUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearch) params.set("search", debouncedSearch);
+    if (status) params.set("status", status);
+    if (source) params.set("source", source);
+    const q = params.toString();
+    return `/api/contacts/export${q ? `?${q}` : ""}`;
+  }, [debouncedSearch, status, source]);
 
   const submitAdd = async () => {
     setAddSaving(true);
     setErrs({});
     try {
       const body: Record<string, unknown> = { email: form.email.trim() };
-      for (const key of ["firstName", "lastName", "company", "website", "title", "timeZone", "country"] as const) {
+      for (const key of [
+        "firstName",
+        "lastName",
+        "company",
+        "website",
+        "title",
+        "timeZone",
+        "country",
+        "source",
+        "notes",
+      ] as const) {
         if (form[key].trim()) body[key] = form[key].trim();
       }
+      const tags = form.tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      if (tags.length > 0) body.tags = tags;
       await api("/api/contacts", { method: "POST", body: JSON.stringify(body) });
       toast.push("success", "Contact added.");
       setAddOpen(false);
@@ -145,6 +187,13 @@ export default function ContactsPage() {
         description="Everyone you can reach. Duplicates are blocked by the database."
         actions={
           <>
+            <a
+              href={exportUrl}
+              download
+              className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              Export CSV
+            </a>
             <Link
               href="/contacts/import"
               className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
@@ -189,6 +238,28 @@ export default function ContactsPage() {
               ))}
             </Select>
           </div>
+          {data?.sources && data.sources.length > 0 && (
+            <div className="w-48">
+              <label htmlFor="contact-source" className="sr-only">
+                Filter by source
+              </label>
+              <Select
+                id="contact-source"
+                value={source}
+                onChange={(e) => {
+                  setSource(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">All sources</option>
+                {data.sources.map((s) => (
+                  <option key={s ?? ""} value={s ?? ""}>
+                    {s}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
         </div>
 
         {!data && !loadError ? (
@@ -215,7 +286,7 @@ export default function ContactsPage() {
         ) : (
           data && (
             <>
-              <Table headers={["Email", "Name", "Company", "Time zone", "Status", "Sent", "Added", ""]}>
+              <Table headers={["Email", "Name", "Company", "Source", "Tags", "Time zone", "Status", "Sent", "Added", ""]}>
                 {data.items.map((c) => (
                   <tr key={c.id} className="text-sm">
                     <td className="px-3 py-2.5">
@@ -237,6 +308,26 @@ export default function ContactsPage() {
                         "—"
                       )}
                     </td>
+                    <td className="px-3 py-2.5 text-xs text-[var(--muted)]">{c.source ?? "—"}</td>
+                    <td className="px-3 py-2.5">
+                      {c.tags.length > 0 ? (
+                        <span className="flex flex-wrap gap-1">
+                          {c.tags.slice(0, 3).map((t) => (
+                            <span
+                              key={t}
+                              className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] dark:bg-white/10"
+                            >
+                              {t}
+                            </span>
+                          ))}
+                          {c.tags.length > 3 && (
+                            <span className="text-[11px] text-[var(--muted)]">+{c.tags.length - 3}</span>
+                          )}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className="px-3 py-2.5 text-xs text-[var(--muted)]">{c.timeZone ?? "—"}</td>
                     <td className="px-3 py-2.5">
                       <StatusBadge status={c.status} />
@@ -245,6 +336,11 @@ export default function ContactsPage() {
                       {c.sentCount}
                       {c.lastSentAt && (
                         <span className="ml-1 text-xs text-[var(--muted)]">· last {new Date(c.lastSentAt).toLocaleDateString()}</span>
+                      )}
+                      {c.lastRepliedAt && (
+                        <span className="ml-1 text-xs text-emerald-600 dark:text-emerald-400">
+                          · replied {new Date(c.lastRepliedAt).toLocaleDateString()}
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-[var(--muted)]">{new Date(c.createdAt).toLocaleDateString()}</td>
@@ -320,6 +416,17 @@ export default function ContactsPage() {
             hint="IANA name like Asia/Karachi — used to send inside the recipient's local window."
           >
             <Input id="c-tz" value={form.timeZone} onChange={(e) => setForm((f) => ({ ...f, timeZone: e.target.value }))} placeholder="Europe/Berlin" />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Source" htmlFor="c-source" error={errs.source} hint="Where the lead came from.">
+              <Input id="c-source" value={form.source} onChange={(e) => setForm((f) => ({ ...f, source: e.target.value }))} placeholder="Referral, LinkedIn, webinar…" />
+            </Field>
+            <Field label="Tags" htmlFor="c-tags" error={errs.tags} hint="Comma separated.">
+              <Input id="c-tags" value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="saas, agency, high-value" />
+            </Field>
+          </div>
+          <Field label="Notes" htmlFor="c-notes" error={errs.notes}>
+            <Input id="c-notes" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Context you want to remember about this lead" />
           </Field>
         </div>
       </Modal>

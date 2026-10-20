@@ -102,6 +102,16 @@ export async function POST(req: NextRequest) {
         data: { status: "CANCELLED", skipReason: "UNSUBSCRIBED" },
       });
 
+      // Every pending follow-up for this contact stops as well.
+      await tx.followUpMessage.updateMany({
+        where: { contactId: contact.id, status: "SCHEDULED" },
+        data: { status: "CANCELLED", cancelReason: "The contact unsubscribed." },
+      });
+      await tx.sendJob.updateMany({
+        where: { contactId: contact.id, status: "QUEUED", followUpMessageId: { not: null } },
+        data: { status: "CANCELLED" },
+      });
+
       await tx.unsubscribeEvent.create({
         data: {
           userId,

@@ -20,10 +20,14 @@ export const GET = handleApi(async (req: NextRequest) => {
     search: url.searchParams.get("search") ?? undefined,
   });
   const status = url.searchParams.get("status");
+  const source = url.searchParams.get("source")?.trim();
+  const tag = url.searchParams.get("tag")?.trim();
 
   const where = {
     userId: user.id,
     ...(status ? { status: status as never } : {}),
+    ...(source ? { source: { equals: source, mode: "insensitive" as const } } : {}),
+    ...(tag ? { tags: { has: tag } } : {}),
     ...(search
       ? {
           OR: [
@@ -31,12 +35,14 @@ export const GET = handleApi(async (req: NextRequest) => {
             { firstName: { contains: search, mode: "insensitive" as const } },
             { lastName: { contains: search, mode: "insensitive" as const } },
             { company: { contains: search, mode: "insensitive" as const } },
+            { title: { contains: search, mode: "insensitive" as const } },
+            { notes: { contains: search, mode: "insensitive" as const } },
           ],
         }
       : {}),
   };
 
-  const [total, items] = await Promise.all([
+  const [total, items, sources] = await Promise.all([
     prisma.contact.count({ where }),
     prisma.contact.findMany({
       where,
@@ -44,9 +50,16 @@ export const GET = handleApi(async (req: NextRequest) => {
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
+    // Distinct sources/tags for the filter dropdowns.
+    prisma.contact.findMany({
+      where: { userId: user.id },
+      distinct: ["source"],
+      select: { source: true },
+      orderBy: { source: "asc" },
+    }),
   ]);
 
-  return json({ total, page, pageSize, items });
+  return json({ total, page, pageSize, items, sources: sources.map((s) => s.source).filter(Boolean) });
 });
 
 export const POST = handleApi(async (req: NextRequest) => {
@@ -72,6 +85,9 @@ export const POST = handleApi(async (req: NextRequest) => {
       title: body.title ?? null,
       timeZone: body.timeZone ?? null,
       country: body.country ?? null,
+      source: body.source ?? null,
+      notes: body.notes ?? null,
+      tags: body.tags ?? [],
       consentAt: body.consentAt ?? null,
       consentSource: body.consentSource ?? null,
     },

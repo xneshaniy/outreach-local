@@ -15,6 +15,8 @@ type Analytics = {
   totals: { sent: number; attemptsByOutcome: Record<string, number> };
   todayUsage: Array<{ sentCount: number; reservedCount: number; senderAccount: { email: string; dailyCap: number; status: string } }>;
 };
+type RepliesResponse = { total: number; unread: number };
+type FollowUpStats = { scheduled: number; failed: number };
 
 function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
@@ -30,17 +32,24 @@ export default function DashboardPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [jobs, setJobs] = useState<JobsResponse | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [replies, setReplies] = useState<RepliesResponse | null>(null);
+  const [followUpStats, setFollowUpStats] = useState<FollowUpStats>({ scheduled: 0, failed: 0 });
 
   useEffect(() => {
     Promise.all([
       api<Me>("/api/auth/me"),
       api<JobsResponse>("/api/jobs?pageSize=1"),
       api<Analytics>("/api/analytics?days=7"),
+      api<RepliesResponse>("/api/replies?pageSize=1"),
+      api<{ sequences: Array<{ _count?: { messages: number } }> }>("/api/follow-ups"),
     ])
-      .then(([m, j, a]) => {
+      .then(([m, j, a, r, f]) => {
         setMe(m);
         setJobs(j);
         setAnalytics(a);
+        setReplies(r);
+        const scheduled = f.sequences.reduce((sum, s) => sum + (s._count?.messages ?? 0), 0);
+        setFollowUpStats({ scheduled, failed: 0 });
       })
       .catch(() => undefined);
   }, []);
@@ -97,6 +106,45 @@ export default function DashboardPage() {
                   <p className="text-xs text-[var(--muted)]">{k.toLowerCase().replace(/_/g, " ")}</p>
                 </div>
               ))}
+            </div>
+          ) : (
+            <Skeleton className="h-16" />
+          )}
+        </Card>
+
+        <Card
+          title="Replies & follow-ups"
+          description="People who answered, and the follow-ups still scheduled."
+          actions={
+            <Link href="/replies" className="text-sm text-[var(--accent)] hover:underline">
+              Open inbox &rarr;
+            </Link>
+          }
+        >
+          {replies ? (
+            <div className="flex items-end gap-6">
+              <div>
+                <p className="text-3xl font-semibold text-emerald-600 dark:text-emerald-400">
+                  {replies.unread}
+                </p>
+                <p className="text-xs text-[var(--muted)]">unread replies</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold">{replies.total}</p>
+                <p className="text-xs text-[var(--muted)]">replies in total</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold">{followUpStats.scheduled}</p>
+                <p className="text-xs text-[var(--muted)]">follow-ups scheduled</p>
+              </div>
+              {followUpStats.failed > 0 && (
+                <div>
+                  <p className="text-xl font-semibold text-red-600 dark:text-red-400">
+                    {followUpStats.failed}
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">follow-ups failed</p>
+                </div>
+              )}
             </div>
           ) : (
             <Skeleton className="h-16" />

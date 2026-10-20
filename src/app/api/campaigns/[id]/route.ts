@@ -6,6 +6,8 @@ import { campaignUpdateSchema } from "@/lib/validation";
 import { campaignStats, reschedulePendingRecipients } from "@/lib/campaign";
 import { audit } from "@/lib/audit";
 import { normalizeTimeZone } from "@/lib/email-normalize";
+import { ApiError } from "@/lib/errors";
+import { cancelFollowUpsForCampaign } from "@/lib/followup";
 
 /**
  * GET    /api/campaigns/:id — campaign detail + live statistics.
@@ -21,7 +23,24 @@ export const GET = handleApi(async (_req: NextRequest, ctx: Ctx) => {
   const { id } = await ctx.params;
   const campaign = await requireCampaign(user.id, id);
   const stats = await campaignStats(campaign.id);
-  return json({ campaign, stats });
+  const [service, sequence, followUps, replies] = await Promise.all([
+    campaign.serviceId
+      ? prisma.service.findUnique({ where: { id: campaign.serviceId } })
+      : Promise.resolve(null),
+    campaign.followUpSequenceId
+      ? prisma.followUpSequence.findUnique({
+          where: { id: campaign.followUpSequenceId },
+          include: { steps: { orderBy: { order: "asc" } } },
+        })
+      : Promise.resolve(null),
+    prisma.followUpMessage.groupBy({
+      by: ["status"],
+      where: { campaignId: campaign.id },
+      _count: { _all: true },
+    }),
+    prisma.reply.count({ where: { campaignId: campaign.id } }),
+  ]);
+  return json({ campaign, stats, service, sequence, followUps, replies });
 });
 
 export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
@@ -31,6 +50,21 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
   const campaign = await requireCampaign(user.id, id);
 
   const body = campaignUpdateSchema.parse(await req.json());
+
+  if (body.serviceId) {
+    const service = await prisma.service.findFirst({
+      where: { id: body.serviceId, userId: user.id },
+      select: { id: true },
+    });
+    if (!service) throw ApiError.badRequest("That service does not exist.");
+  }
+  if (body.followUpSequenceId) {
+    const sequence = await prisma.followUpSequence.findFirst({
+      where: { id: body.followUpSequenceId, userId: user.id },
+      select: { id: true },
+    });
+    if (!sequence) throw ApiError.badRequest("That follow-up sequence does not exist.");
+  }
 
   const scheduleChanged =
     (body.windowStartMinute !== undefined && body.windowStartMinute !== campaign.windowStartMinute) ||
@@ -46,6 +80,8 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
       ...(body.subject !== undefined ? { subject: body.subject } : {}),
       ...(body.body !== undefined ? { body: body.body } : {}),
       ...(body.templateId !== undefined ? { templateId: body.templateId } : {}),
+      ...(body.serviceId !== undefined ? { serviceId: body.serviceId } : {}),
+      ...(body.followUpSequenceId !== undefined ? { followUpSequenceId: body.followUpSequenceId } : {}),
       ...(body.fromName !== undefined ? { fromName: body.fromName } : {}),
       ...(body.replyTo !== undefined ? { replyTo: body.replyTo } : {}),
       ...(body.windowStartMinute !== undefined ? { windowStartMinute: body.windowStartMinute } : {}),
@@ -56,6 +92,12 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
       ...(body.dailyLimit !== undefined ? { dailyLimit: body.dailyLimit } : {}),
       ...(body.startAt !== undefined ? { startAt: body.startAt } : {}),
       ...(body.endAt !== undefined ? { endAt: body.endAt } : {}),
+      // Changing the content invalidates a previous approval.
+      ...(body.requiresApproval !== undefined ? { requiresApproval: body.requiresApproval } : {}),
+      ...(body.subject !== undefined || body.body !== undefined
+        ? { approvedAt: null, approvedBy: null }
+        : {}),
+      ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
     },
   });
 
@@ -83,6 +125,7 @@ export const DELETE = handleApi(async (req: NextRequest, ctx: Ctx) => {
 
   const { markCampaignCancelled } = await import("@/lib/campaign");
   await markCampaignCancelled(campaign.id);
+  await cancelFollowUpsForCampaign(campaign.id, "The campaign was cancelled.");
 
   await audit(prisma, {
     userId: user.id,

@@ -25,8 +25,14 @@ type Campaign = {
   name: string;
   subject: string;
   body: string;
-  status: "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED";
+  status: "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED" | "ARCHIVED";
   emergencyStopped: boolean;
+  isArchived: boolean;
+  dryRun: boolean;
+  requiresApproval: boolean;
+  approvedAt: string | null;
+  serviceId: string | null;
+  followUpSequenceId: string | null;
   windowStartMinute: number;
   windowEndMinute: number;
   sendingDays: number[];
@@ -52,6 +58,23 @@ type CampaignStats = {
 };
 
 type CampaignDetail = { campaign: Campaign; stats: CampaignStats };
+
+type PreviewResponse = {
+  preview: {
+    to: string;
+    toName: string | null;
+    subject: string;
+    html: string;
+    text: string;
+    unsubscribeUrl: string;
+  };
+  personalization: {
+    body: { variables: string[]; missing: string[]; partial: string[]; contactsChecked: number };
+    subject: { variables: string[]; missing: string[]; partial: string[]; contactsChecked: number };
+    problems: string[];
+  };
+  audienceSize: number;
+};
 
 type Recipient = {
   id: string;
@@ -130,7 +153,7 @@ function StatTile({ label, value, tone }: { label: string; value: number; tone?:
   );
 }
 
-type Tab = "recipients" | "schedule" | "settings" | "activity";
+type Tab = "preview" | "recipients" | "schedule" | "settings" | "activity";
 
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -139,7 +162,11 @@ export default function CampaignDetailPage() {
 
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("recipients");
+  const [tab, setTab] = useState<Tab>("preview");
+
+  // Preview tab
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -177,9 +204,15 @@ export default function CampaignDetailPage() {
     dailyLimit: "",
     timeZoneFallback: "HOLD" as "HOLD" | "FALLBACK",
     fallbackTimeZone: "",
+    serviceId: "",
+    followUpSequenceId: "",
+    dryRun: false,
+    requiresApproval: false,
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsErrs, setSettingsErrs] = useState<Record<string, string>>({});
+  const [services, setServices] = useState<Array<{ id: string; name: string }>>([]);
+  const [sequences, setSequences] = useState<Array<{ id: string; name: string; isActive: boolean }>>([]);
 
   // Activity tab
   const [activity, setActivity] = useState<ActivityResponse | null>(null);
@@ -202,6 +235,10 @@ export default function CampaignDetailPage() {
           dailyLimit: d.campaign.dailyLimit ? String(d.campaign.dailyLimit) : "",
           timeZoneFallback: d.campaign.timeZoneFallback,
           fallbackTimeZone: d.campaign.fallbackTimeZone ?? "",
+          serviceId: d.campaign.serviceId ?? "",
+          followUpSequenceId: d.campaign.followUpSequenceId ?? "",
+          dryRun: d.campaign.dryRun,
+          requiresApproval: d.campaign.requiresApproval,
         });
       })
       .catch((err) => setLoadError(errorMessage(err)));
@@ -210,6 +247,15 @@ export default function CampaignDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    api<{ services: Array<{ id: string; name: string }> }>("/api/services")
+      .then((d) => setServices(d.services))
+      .catch(() => setServices([]));
+    api<{ sequences: Array<{ id: string; name: string; isActive: boolean }> }>("/api/follow-ups")
+      .then((d) => setSequences(d.sequences))
+      .catch(() => setSequences([]));
+  }, []);
 
   const loadRecipients = useCallback(() => {
     const params = new URLSearchParams({ page: String(rPage), pageSize: "20" });
@@ -239,11 +285,36 @@ export default function CampaignDetailPage() {
     if (tab === "activity") loadActivity();
   }, [tab, loadActivity]);
 
-  const runStatusAction = async (action: "start" | "pause" | "resume") => {
+  const loadPreview = useCallback(() => {
+    api<PreviewResponse>(`/api/campaigns/${id}/preview`)
+      .then((d) => {
+        setPreview(d);
+        setPreviewError(null);
+      })
+      .catch((err) => {
+        setPreview(null);
+        setPreviewError(errorMessage(err));
+      });
+  }, [id]);
+
+  useEffect(() => {
+    if (tab === "preview") loadPreview();
+  }, [tab, loadPreview, detail]);
+
+  const runStatusAction = async (action: "start" | "pause" | "resume" | "approve") => {
     setActionBusy(action);
     try {
       await api(`/api/campaigns/${id}/${action}`, { method: "POST" });
-      toast.push("success", `Campaign ${action === "start" ? "started" : action === "pause" ? "paused" : "resumed"}.`);
+      toast.push(
+        "success",
+        action === "start"
+          ? "Campaign started."
+          : action === "pause"
+            ? "Campaign paused."
+            : action === "approve"
+              ? "Campaign approved."
+              : "Campaign resumed.",
+      );
       load();
     } catch (err) {
       toast.push("error", errorMessage(err));
@@ -368,6 +439,10 @@ export default function CampaignDetailPage() {
       payload.fromName = settings.fromName.trim() || null;
       payload.replyTo = settings.replyTo.trim() || null;
       payload.dailyLimit = settings.dailyLimit.trim() ? Number(settings.dailyLimit) : null;
+      payload.serviceId = settings.serviceId || null;
+      payload.followUpSequenceId = settings.followUpSequenceId || null;
+      payload.dryRun = settings.dryRun;
+      payload.requiresApproval = settings.requiresApproval;
       if (settings.timeZoneFallback === "FALLBACK") payload.fallbackTimeZone = settings.fallbackTimeZone.trim();
       await api(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
       toast.push("success", "Settings saved.");
@@ -413,6 +488,7 @@ export default function CampaignDetailPage() {
   const { campaign, stats } = detail;
   const editable = ["DRAFT", "ACTIVE", "PAUSED"].includes(campaign.status);
   const tabs: Array<{ key: Tab; label: string }> = [
+    { key: "preview", label: "Preview" },
     { key: "recipients", label: "Recipients" },
     { key: "schedule", label: "Schedule" },
     { key: "settings", label: "Settings" },
@@ -467,6 +543,29 @@ export default function CampaignDetailPage() {
         </div>
       )}
 
+      {campaign.dryRun && (
+        <div role="status" className="mb-4 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
+          <span className="font-medium">Dry run.</span> Messages are rendered and scheduled normally
+          but no email is handed to the provider and no quota is consumed. Turn it off from the
+          campaign settings when you are ready to send for real.
+        </div>
+      )}
+
+      {campaign.requiresApproval && !campaign.approvedAt && (
+        <div role="alert" className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+          <span className="font-medium">Waiting for approval.</span> This campaign cannot start
+          until it is approved.
+          <Button
+            variant="secondary"
+            className="ml-3"
+            loading={actionBusy === "approve"}
+            onClick={() => runStatusAction("approve")}
+          >
+            Approve now
+          </Button>
+        </div>
+      )}
+
       <div className="mb-6 grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Recipients" value={stats.total} />
         <StatTile label="Sent" value={stats.sent} tone="text-emerald-600 dark:text-emerald-400" />
@@ -490,6 +589,64 @@ export default function CampaignDetailPage() {
           </button>
         ))}
       </div>
+
+      {tab === "preview" && (
+        <Card
+          title="Message preview"
+          description="Rendered exactly as the worker will send it, including the unsubscribe link."
+        >
+          {previewError && (
+            <div role="alert" className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+              {previewError}
+            </div>
+          )}
+          {preview ? (
+            <>
+              {preview.personalization.problems.length > 0 && (
+                <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                  <p className="font-medium">Personalisation gaps</p>
+                  <ul className="mt-1 list-disc pl-5">
+                    {preview.personalization.problems.map((p) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <dl className="mb-4 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-[var(--muted)]">To</dt>
+                  <dd className="text-sm">{preview.preview.to}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-[var(--muted)]">Subject</dt>
+                  <dd className="text-sm">{preview.preview.subject}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-[var(--muted)]">Audience</dt>
+                  <dd className="text-sm">
+                    {preview.audienceSize} recipient{preview.audienceSize === 1 ? "" : "s"}
+                    {preview.personalization.body.contactsChecked > 0 && (
+                      <span className="text-[var(--muted)]">
+                        {" "}
+                        (checked {preview.personalization.body.contactsChecked})
+                      </span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-[var(--muted)]">Unsubscribe</dt>
+                  <dd className="truncate text-xs text-[var(--muted)]">{preview.preview.unsubscribeUrl}</dd>
+                </div>
+              </dl>
+              <div className="rounded-lg border border-[var(--border)] bg-white p-4 text-sm text-black">
+                <div dangerouslySetInnerHTML={{ __html: preview.preview.html }} />
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-[var(--muted)]">Loading the preview…</p>
+          )}
+        </Card>
+      )}
 
       {tab === "recipients" && (
         <>
@@ -729,6 +886,75 @@ export default function CampaignDetailPage() {
                 />
               </Field>
             )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Service" htmlFor="set-service" hint="The business line this campaign promotes.">
+                <Select
+                  id="set-service"
+                  value={settings.serviceId}
+                  onChange={(e) => setSettings((s) => ({ ...s, serviceId: e.target.value }))}
+                >
+                  <option value="">— no service —</option>
+                  {services.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field
+                label="Follow-up sequence"
+                htmlFor="set-sequence"
+                hint="Scheduled automatically after the first email is delivered."
+              >
+                <Select
+                  id="set-sequence"
+                  value={settings.followUpSequenceId}
+                  onChange={(e) => setSettings((s) => ({ ...s, followUpSequenceId: e.target.value }))}
+                >
+                  <option value="">— no follow-ups —</option>
+                  {sequences.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-lg border border-[var(--border)] p-3">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.dryRun}
+                  onChange={(e) => setSettings((s) => ({ ...s, dryRun: e.target.checked }))}
+                  className="mt-1 h-4 w-4"
+                />
+                <span>
+                  <span className="text-sm font-medium">Dry run</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    Render and schedule every message but never hand it to the provider. No email
+                    leaves the machine and no quota is consumed.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.requiresApproval}
+                  onChange={(e) => setSettings((s) => ({ ...s, requiresApproval: e.target.checked }))}
+                  className="mt-1 h-4 w-4"
+                />
+                <span>
+                  <span className="text-sm font-medium">Require approval before sending</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    The campaign cannot be started until it is approved. Changing the subject or body
+                    clears a previous approval.
+                  </span>
+                </span>
+              </label>
+            </div>
+
             <div>
               <Button onClick={saveSettings} loading={settingsSaving}>
                 Save settings

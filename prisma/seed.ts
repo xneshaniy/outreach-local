@@ -2,6 +2,7 @@ import { PrismaClient, type Prisma } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
 import { normalizeEmail, normalizeTimeZone } from "../src/lib/email-normalize";
 import { jobIdempotencyKey } from "../src/lib/queue";
+import { ensureStarterServices } from "../src/lib/services";
 
 /**
  * Idempotent development seed.
@@ -80,6 +81,10 @@ async function main() {
   });
   console.log(`✓ template ${template.name}`);
 
+  // --- Service profiles ------------------------------------------------------
+  const services = await ensureStarterServices(user.id);
+  console.log(`✓ ${services.length} service profiles`);
+
   // --- Contacts -------------------------------------------------------------
   const contacts = [];
   for (const c of CONTACTS) {
@@ -96,6 +101,8 @@ async function main() {
         title: c.title,
         timeZone: normalizeTimeZone(c.timeZone ?? undefined),
         country: c.country || null,
+        source: "seed",
+        tags: c.company ? [c.company.toLowerCase().split(" ")[0] ?? "lead"] : [],
         consentAt: new Date(),
         consentSource: "seed",
       },
@@ -106,6 +113,7 @@ async function main() {
   console.log(`✓ ${contacts.length} contacts (1 intentionally has no time zone)`);
 
   // --- Campaign -------------------------------------------------------------
+  const service = services[0] ?? null;
   const campaign = await prisma.campaign.upsert({
     where: { id: `seed-campaign-${user.id}` },
     create: {
@@ -115,7 +123,10 @@ async function main() {
       subject: template.subject,
       body: template.body,
       templateId: template.id,
+      serviceId: service?.id ?? null,
       status: "DRAFT",
+      // A seeded campaign never sends anything until it is started by hand.
+      dryRun: true,
       // Recipient-local 09:00–17:00 Mon–Fri; unknown time zones are held.
       windowStartMinute: 540,
       windowEndMinute: 1020,
@@ -127,6 +138,39 @@ async function main() {
     update: {},
   });
   console.log(`✓ campaign ${campaign.name}`);
+
+  // --- Follow-up sequence ----------------------------------------------------
+  const sequence = await prisma.followUpSequence.upsert({
+    where: { id: `seed-sequence-${user.id}` },
+    create: {
+      id: `seed-sequence-${user.id}`,
+      userId: user.id,
+      serviceId: service?.id ?? null,
+      name: "Two polite bumps",
+      steps: {
+        create: [
+          {
+            order: 1,
+            delayDays: 3,
+            subject: "Quick follow-up",
+            body: "<p>Hi {{first_name}}, just checking in on my note below — happy to send more detail if useful.</p>",
+          },
+          {
+            order: 2,
+            delayDays: 5,
+            subject: "Closing the loop on {{company}}",
+            body: "<p>Hi {{first_name}}, last note from me — if this is not a priority right now, no worries at all.</p>",
+          },
+        ],
+      },
+    },
+    update: {},
+  });
+  await prisma.campaign.update({
+    where: { id: campaign.id },
+    data: { followUpSequenceId: sequence.id },
+  });
+  console.log(`✓ follow-up sequence "${sequence.name}"`);
 
   // --- Recipients + jobs ----------------------------------------------------
   // A recipient is created for every contact exactly once (UNIQUE campaignId,contactId).

@@ -6,6 +6,7 @@ import { campaignCreateSchema, paginationSchema } from "@/lib/validation";
 import { enforceRateLimit, apiLimitKey } from "@/lib/ratelimit";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
+import { ApiError } from "@/lib/errors";
 
 /**
  * GET  /api/campaigns — list (search, filter by status, paginate).
@@ -22,10 +23,15 @@ export const GET = handleApi(async (req: NextRequest) => {
     search: url.searchParams.get("search") ?? undefined,
   });
   const status = url.searchParams.get("status");
+  const serviceId = url.searchParams.get("serviceId")?.trim();
+  const archived = url.searchParams.get("archived");
 
   const where = {
     userId: user.id,
+    // Archived campaigns are hidden unless explicitly requested.
+    ...(archived === "true" ? { isArchived: true } : { isArchived: false }),
     ...(status ? { status: status as never } : {}),
+    ...(serviceId ? { serviceId } : {}),
     ...(search ? { name: { contains: search, mode: "insensitive" as const } } : {}),
   };
 
@@ -36,7 +42,11 @@ export const GET = handleApi(async (req: NextRequest) => {
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: { _count: { select: { recipients: true, sendJobs: true } } },
+      include: {
+        service: { select: { id: true, name: true, color: true } },
+        followUpSequence: { select: { id: true, name: true } },
+        _count: { select: { recipients: true, sendJobs: true, replies: true } },
+      },
     }),
   ]);
 
@@ -50,6 +60,23 @@ export const POST = handleApi(async (req: NextRequest) => {
 
   const body = campaignCreateSchema.parse(await req.json());
 
+  // The service and the follow-up sequence must belong to this workspace.
+  if (body.serviceId) {
+    const service = await prisma.service.findFirst({
+      where: { id: body.serviceId, userId: user.id },
+      select: { id: true },
+    });
+    if (!service) throw ApiError.badRequest("That service does not exist.");
+  }
+  if (body.followUpSequenceId) {
+    const sequence = await prisma.followUpSequence.findFirst({
+      where: { id: body.followUpSequenceId, userId: user.id },
+      select: { id: true, isActive: true },
+    });
+    if (!sequence) throw ApiError.badRequest("That follow-up sequence does not exist.");
+    if (!sequence.isActive) throw ApiError.badRequest("That follow-up sequence is inactive.");
+  }
+
   const campaign = await prisma.campaign.create({
     data: {
       userId: user.id,
@@ -57,6 +84,8 @@ export const POST = handleApi(async (req: NextRequest) => {
       subject: body.subject,
       body: body.body,
       templateId: body.templateId ?? null,
+      serviceId: body.serviceId ?? null,
+      followUpSequenceId: body.followUpSequenceId ?? null,
       fromName: body.fromName ?? null,
       replyTo: body.replyTo ?? null,
       windowStartMinute: body.windowStartMinute,
@@ -67,6 +96,8 @@ export const POST = handleApi(async (req: NextRequest) => {
       dailyLimit: body.dailyLimit ?? null,
       startAt: body.startAt ?? null,
       endAt: body.endAt ?? null,
+      requiresApproval: body.requiresApproval,
+      dryRun: body.dryRun,
     },
   });
 

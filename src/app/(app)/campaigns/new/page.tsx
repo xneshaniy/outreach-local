@@ -7,6 +7,15 @@ import { PageHeader } from "@/components/AppShell";
 import { api, errorMessage, fieldErrors } from "@/lib/client/api";
 
 type Template = { id: string; name: string; subject: string; body: string };
+type Service = {
+  id: string;
+  name: string;
+  color: string;
+  defaultSubject?: string | null;
+  defaultBody?: string | null;
+  defaultCta?: string | null;
+};
+type Sequence = { id: string; name: string; isActive: boolean; steps: Array<{ order: number; delayDays: number }> };
 
 const WEEKDAYS = [
   { value: 0, label: "Sun" },
@@ -28,6 +37,12 @@ export default function NewCampaignPage() {
 
   const [templates, setTemplates] = useState<Template[]>([]);
   const [templateId, setTemplateId] = useState("");
+  const [services, setServices] = useState<Service[]>([]);
+  const [serviceId, setServiceId] = useState("");
+  const [sequences, setSequences] = useState<Sequence[]>([]);
+  const [sequenceId, setSequenceId] = useState("");
+  const [dryRun, setDryRun] = useState(true);
+  const [requiresApproval, setRequiresApproval] = useState(false);
 
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
@@ -53,7 +68,32 @@ export default function NewCampaignPage() {
     api<{ templates: Template[] }>("/api/templates")
       .then((d) => setTemplates(d.templates))
       .catch(() => undefined);
+    api<{ services: Service[] }>("/api/services?seedIfEmpty=true")
+      .then((d) => setServices(d.services))
+      .catch(() => undefined);
+    api<{ sequences: Sequence[] }>("/api/follow-ups")
+      .then((d) => setSequences(d.sequences.filter((s) => s.isActive)))
+      .catch(() => undefined);
   }, []);
+
+  /** Picking a service pre-fills the subject and body from its defaults. */
+  const applyService = (id: string) => {
+    setServiceId(id);
+    if (!id) return;
+    const svc = services.find((s) => s.id === id);
+    if (!svc) return;
+    if ((subjectTouched || bodyTouched) && !window.confirm("Replace the current subject and body with the service defaults?")) {
+      return;
+    }
+    if (svc.defaultSubject) {
+      setSubject(svc.defaultSubject);
+      setSubjectTouched(true);
+    }
+    if (svc.defaultBody) {
+      setBody(svc.defaultBody);
+      setBodyTouched(true);
+    }
+  };
 
   const applyTemplate = (id: string) => {
     setTemplateId(id);
@@ -89,6 +129,10 @@ export default function NewCampaignPage() {
         timeZoneFallback: tzMode,
       };
       if (templateId) payload.templateId = templateId;
+      if (serviceId) payload.serviceId = serviceId;
+      if (sequenceId) payload.followUpSequenceId = sequenceId;
+      payload.dryRun = dryRun;
+      payload.requiresApproval = requiresApproval;
       if (fromName.trim()) payload.fromName = fromName.trim();
       if (replyTo.trim()) payload.replyTo = replyTo.trim();
       if (tzMode === "FALLBACK") payload.fallbackTimeZone = fallbackTimeZone.trim();
@@ -134,6 +178,34 @@ export default function NewCampaignPage() {
                 {templates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label="Service"
+              htmlFor="svc"
+              hint="The business line this campaign promotes. Choosing one pre-fills the defaults."
+            >
+              <Select id="svc" value={serviceId} onChange={(e) => applyService(e.target.value)}>
+                <option value="">— no service —</option>
+                {services.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label="Follow-up sequence (optional)"
+              htmlFor="seq"
+              hint="After the first email is delivered, the next step is scheduled automatically."
+            >
+              <Select id="seq" value={sequenceId} onChange={(e) => setSequenceId(e.target.value)}>
+                <option value="">— no follow-ups —</option>
+                {sequences.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.steps.length} step{s.steps.length === 1 ? "" : "s"})
                   </option>
                 ))}
               </Select>
@@ -249,6 +321,40 @@ export default function NewCampaignPage() {
             <Field label="Daily limit (optional)" htmlFor="daily-limit" hint="Max emails from this campaign per day, across all senders.">
               <Input id="daily-limit" type="number" min={1} value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} placeholder="unlimited" />
             </Field>
+          </div>
+        </Card>
+
+        <Card title="Safety" description="New campaigns start in dry-run mode so nothing is sent until you are happy.">
+          <div className="flex flex-col gap-3">
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={dryRun}
+                onChange={(e) => setDryRun(e.target.checked)}
+                className="mt-1 h-4 w-4"
+              />
+              <span>
+                <span className="text-sm font-medium">Dry run</span>
+                <span className="block text-xs text-[var(--muted)]">
+                  The worker renders every message and marks it delivered without contacting the
+                  provider. No email ever leaves the machine and no quota is consumed.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={requiresApproval}
+                onChange={(e) => setRequiresApproval(e.target.checked)}
+                className="mt-1 h-4 w-4"
+              />
+              <span>
+                <span className="text-sm font-medium">Require approval before sending</span>
+                <span className="block text-xs text-[var(--muted)]">
+                  The campaign cannot be started until it is approved from the campaign page.
+                </span>
+              </span>
+            </label>
           </div>
         </Card>
 

@@ -80,6 +80,35 @@ openssl rand -base64 32   # ENCRYPTION_KEY (exactly 32 bytes → base64)
   encrypted tokens unreadable** — reconnect sender accounts afterwards. Back it
   up alongside the database.
 
+## 2b. Start in dry-run mode
+
+Before any real email goes out, verify the whole pipeline without touching a
+provider:
+
+```dotenv
+DRY_RUN="true"
+```
+
+With `DRY_RUN=true` (or a campaign created with the dry-run flag) the worker
+renders every message, reserves and settles the quota as usual, and marks the
+job as delivered — but **no email is ever handed to the provider** and no
+follow-up is scheduled. The provider message id is prefixed `dry-run:` so the
+UI can say so plainly.
+
+Checklist before turning it off:
+
+1. `GET /api/health` returns `{"status":"ok","database":"up"}`.
+2. A connected sender account passes `POST /api/senders/test`.
+3. `GET /api/campaigns/:id/preview` shows the message you expect, and the
+   personalisation report has no unexpected gaps.
+4. The campaign's sending window, time-zone policy and daily limit are right.
+5. The suppression list and the unsubscribe link work (the preview contains a
+   real `/api/unsubscribe` URL).
+
+Then set `DRY_RUN="false"` and restart the worker.
+
+---
+
 ## 3. Environment
 
 Set at minimum:

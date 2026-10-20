@@ -41,28 +41,92 @@ may not have been sent is never blindly retried.
 
 ## Features
 
-- **Multiple sender accounts** (up to `MAX_SENDER_ACCOUNTS`, default 10) per
-  workspace — Gmail via the official API + OAuth 2.0, or any SMTP server.
-- **CSV contact import** with validation, per-row error reporting and
-  de-duplication.
-- **Campaigns** with templates, `{{first_name}}`-style variables, an
-  unsubscribe link, and pause/resume/emergency-stop.
-- **Recipient-local scheduling.** Each message is timed to 09:00–17:00 on
-  Mon–Fri *in the recipient's time zone* (DST-correct). Recipients with an
-  unknown or invalid time zone are **held for review**, not guessed.
-- **Database-enforced duplicate prevention.** A contact can belong to a
-  campaign exactly once, forever — enforced with `UNIQUE (campaignId, contactId)`.
-- **Quota-aware sending.** Per-sender daily caps (default 100/day), per-campaign
-  daily limits, and per-contact frequency limits, all reserved transactionally.
-- **Crash-safe queue.** Atomic claiming with `FOR UPDATE SKIP LOCKED`, leases and
-  lease reclamation, and exponential backoff with jitter.
-- **Never-blind-retry.** A timeout *after* the provider accepted a message leaves
-  the job `AMBIGUOUS` and requires reconciliation before any resend.
-- **Compliance:** one-click unsubscribe (`List-Unsubscribe` + RFC 8058), a
-  suppression list (global and per-campaign), bounce/complaint webhook handling,
-  consent tracking, and an audit log.
-- **Security:** encrypted provider tokens at rest (AES-256-GCM), session
-  cookies (HttpOnly, HMAC-signed JWT), CSRF origin checks, rate limiting, and
+### Multiple business services
+- **Service profiles** — one per business line (lead generation, virtual
+  assistance, CRM automation, email outreach, e-commerce, …). Each carries its
+  own description, target industries, ideal customer profile, default subject,
+  default body and call to action. Campaigns, templates and follow-up
+  sequences can be linked to a service.
+- Starter profiles are created on first visit and are fully editable.
+
+### Contacts and leads
+- Add, edit, view, search, filter, import (CSV wizard with column mapping) and
+  **export** contacts.
+- Store name, company, business email, website, role, **source**, **tags**,
+  **notes** and consent basis.
+- Duplicate detection is enforced by the database (`UNIQUE (userId, emailNormalized)`),
+  including case- and dot-variant normalisation for Gmail-family domains.
+- Invalid addresses are rejected; unknown time zones are held for review.
+- Never send to a suppressed or unsubscribed contact.
+
+### Campaigns
+- Create, edit, **duplicate**, pause, resume, **archive** and cancel.
+- Associate a campaign with a **service**, a **follow-up sequence** and a
+  sender account; per-campaign subject, body and signature.
+- Reusable templates with `{{variable}}` personalisation.
+- **Message preview** rendered exactly as the worker will send it, plus a
+  **personalisation coverage report** (which variables the audience cannot fill).
+- **Test sends** and a **manual approval gate** before a campaign can start.
+- Duplicate campaign sends to the same contact are impossible (database unique
+  constraint).
+
+### Sending
+- Gmail (official API + OAuth 2.0) and any SMTP server. Credentials are
+  encrypted at rest and read from environment variables.
+- **Connection test** endpoint — a real connection/authentication check with a
+  clear error message.
+- Safe queue, per-sender rate limits, retry limits, exponential backoff with
+  jitter, and delivery status tracking.
+- Provider limits and temporary failures are handled gracefully.
+- An email is **never** marked as sent unless the provider confirmed acceptance.
+- A timeout after submission leaves the job `AMBIGUOUS` — it is never retried
+  blindly, so the same message can never go out twice.
+- **Dry-run mode** (global or per campaign): the whole pipeline runs, but no
+  email ever reaches a provider and no quota is consumed. New campaigns start in
+  dry run.
+
+### Automated follow-ups
+- Configurable sequences of steps with per-step delays.
+- Follow-ups stop automatically when a contact replies, unsubscribes, bounces,
+  complains, is suppressed, or when the campaign is paused/cancelled/archived.
+- Each follow-up message tracks its scheduled time, status and failure reason.
+- Scheduling is durable (stored in the database) and survives restarts.
+- Sending windows and time zones apply to follow-ups too.
+- Overlapping workers can never process the same job.
+
+### Replies and inbox
+- Real Gmail inbox polling (`users.messages.list` + `messages.get` using the
+  `gmail.readonly` scope granted at connect time).
+- Replies are matched to the **contact** and to the **campaign** that contacted
+  them; the contact is marked `REPLIED` and their follow-ups are stopped.
+- Replies can be classified (interested / not interested / needs info), marked
+  read, and attached to a contact by hand.
+- SMTP accounts cannot be polled — the UI says so plainly instead of pretending.
+
+### Safety and deliverability
+- Unsubscribe links (`List-Unsubscribe` + RFC 8058 one-click) and a suppression
+  list (global and per-campaign).
+- Hard bounces and complaints suppress the address automatically.
+- Consent/lawful-basis tracking, sender identification, mailing details.
+- Conservative, configurable sending limits (default 100/sender/day, never
+  above the provider limit).
+- No spam-filter evasion, no fake identities, no auto-sending to unverified
+  scraped addresses. Large-scale sending is off by default (dry run).
+
+### Under the hood
+- **Multiple sender accounts** (up to `MAX_SENDER_ACCOUNTS`, default 10).
+- **CSV import** with validation, per-row error reporting and de-duplication.
+- **Recipient-local scheduling** — 09:00–17:00 Mon–Fri *in the recipient's own
+  time zone* (DST-correct). Unknown zones are **held for review**, not guessed.
+- **Database-enforced duplicate prevention** — `UNIQUE (campaignId, contactId)`.
+- **Quota-aware sending** — per-sender daily caps, per-campaign daily limits and
+  per-contact frequency limits, all reserved transactionally.
+- **Crash-safe queue** — atomic claiming with `FOR UPDATE SKIP LOCKED`, leases,
+  lease reclamation and exponential backoff with jitter.
+- **Never-blind-retry** — a timeout *after* the provider accepted a message
+  leaves the job `AMBIGUOUS` and requires reconciliation before any resend.
+- **Security** — encrypted provider tokens at rest (AES-256-GCM), session
+  cookies (HttpOnly, HMAC-signed JWT), CSRF origin checks, rate limiting and
   header-injection guards.
 
 ## Architecture
@@ -161,6 +225,13 @@ In production, a missing required secret throws immediately. See
 | `MIN_DAYS_BETWEEN_CONTACTS`       | `3`                                 | Default contact-frequency limit.                                      |
 | `WORKER_*`                        | see `.env.example`                  | Poll interval, batch size, lease, attempts, backoff.                  |
 | `GOOGLE_*`                        | —                                   | Gmail OAuth client + redirect URI + scopes.                           |
+| `DRY_RUN`                         | `false`                             | `true` = no email ever leaves the machine.                            |
+| `TEST_DATABASE_URL`               | -                                   | **A separate database** - the test suite truncates every table.       |
+
+> **Managed Postgres (Neon, Supabase, RDS).** These providers suspend idle
+> instances. Add `connect_timeout=60&pool_timeout=60` to `DATABASE_URL` - the
+> default 5-second timeout is shorter than a cold start. `src/lib/db.ts`
+> injects these automatically and retries transient connection failures.
 
 ## Connecting Gmail (OAuth)
 
@@ -267,36 +338,48 @@ same key and body return the original response.
 ## Testing
 
 ```bash
-npm run test            # all tests (integration auto-skips without a DB)
-npx vitest run tests/unit   # unit tests only — no database required
-npm run typecheck       # tsc --noEmit
-npm run lint            # eslint
-npm run build           # next build + prisma generate
+npm run test                 # all tests (integration auto-skips without a DB)
+npx vitest run tests/unit    # unit tests only - no database required
+npm run typecheck            # tsc --noEmit
+npm run lint                 # eslint
+npm run build                # next build + prisma generate
+npm run build:worker         # the background-worker bundle
+npm run build:deploy         # a self-contained bundle for shared hosting
 ```
 
-**Unit tests** (no database) cover the deterministic core: email
+**Unit tests** (no database, 86 tests) cover the deterministic core: email
 normalisation, crypto (AES-256-GCM), scheduling/DST maths, template rendering,
-CSV parsing, and retry/backoff classification.
+CSV parsing, retry/backoff classification, personalisation coverage analysis,
+service slugs and the dry-run provider.
 
-**Integration tests** (`tests/integration/**`) run against a real PostgreSQL and
-are **opt-in**. They `TRUNCATE` every table before each test, so never point
-them at production:
+**Integration tests** (`tests/integration/**`, 47 tests) run against a real
+PostgreSQL and are **opt-in**. They `TRUNCATE` every table before each test, so
+**never** point them at the application database - use a separate one:
 
 ```bash
-docker compose up -d db
-TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/outreach_test?schema=public" \
-  npx prisma migrate deploy
-TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/outreach_test?schema=public" \
+# 1. A dedicated test database (Postgres 14+)
+psql "$DATABASE_URL" -c 'CREATE DATABASE outreach_test;'
+
+# 2. Apply the schema to it
+DATABASE_URL="postgresql://.../outreach_test" npx prisma migrate deploy
+
+# 3. Run the suite
+TEST_DATABASE_URL="postgresql://.../outreach_test?sslmode=require" \
   npx vitest run tests/integration
 ```
 
 They cover: unique-constraint duplicate prevention, concurrent duplicate
 imports, deterministic idempotency keys, disjoint concurrent claiming,
 lease reclaim vs. ambiguous, per-attempt accounting, reschedule/cancel rules,
-quota reservation under concurrency, tz-correct quota days, unsubscribe →
-suppression idempotency and forged-token rejection, and authentication /
-authorisation / session-invalidation / CSRF.
+quota reservation under concurrency, tz-correct quota days, unsubscribe ->
+suppression idempotency and forged-token rejection, authentication /
+authorisation / session-invalidation / CSRF, plus the new features: service
+profiles, follow-up scheduling and cancellation, reply matching and reply
+stopping the follow-up chain, and dry-run mode (no provider call, no quota
+consumed, no follow-ups scheduled).
 
+**CI** (`.github/workflows/ci.yml`) provisions PostgreSQL, applies the
+migrations and runs both suites plus the Docker build on every push.
 ## Deployment
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The short version:
@@ -362,14 +445,20 @@ it rather than assuming the code is right.
 src/
   app/                 Next.js App Router
     api/               Route handlers (REST)
-    (dashboard pages)  Senders, contacts, campaigns, queue, analytics, …
+    (app)/             Dashboard pages: services, campaigns, contacts,
+                       follow-ups, replies, senders, templates, queue,
+                       analytics, suppressions, settings, audit
   lib/
     auth/              password hashing, sessions, guards
-    email/             provider abstraction, gmail, smtp
+    email/             provider abstraction, gmail, smtp, dry-run, reply poller
     scheduling.ts      recipient-local window / DST maths
-    queue.ts           PostgreSQL job queue (atomic claim, leases)
+    queue.ts           PostgreSQL job queue (atomic claim, leases, follow-ups)
     quota.ts           transactional quota reservation
     suppression.ts     suppression checks
+    followup.ts        follow-up sequences: schedule, cancel, advance
+    replies.ts         reply matching, recording, and their side effects
+    services.ts        service profiles (one per business line)
+    personalization.ts personalisation coverage analysis
     crypto.ts          AES-256-GCM helpers
     env.ts             validated environment
   worker/              background sender + reconciliation
@@ -377,6 +466,9 @@ prisma/
   schema.prisma        data model & constraints
   migrations/          committed SQL migrations
   seed.ts              idempotent demo seed
+scripts/
+  build-deploy.mjs     self-contained bundle for shared hosting
+  build-on-host.sh     build on the target server (correct native binaries)
 tests/
   unit/                no-database unit tests
   integration/         opt-in, real-PostgreSQL tests

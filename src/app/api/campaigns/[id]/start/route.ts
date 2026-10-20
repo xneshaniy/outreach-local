@@ -17,6 +17,18 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
 
   if (campaign.status === "ACTIVE") return json({ campaign, alreadyActive: true });
 
+  if (campaign.isArchived) {
+    throw ApiError.badRequest("This campaign is archived. Restore it before starting.");
+  }
+
+  // Manual approval gate: a campaign that requires approval must be approved
+  // before it can send anything.
+  if (campaign.requiresApproval && !campaign.approvedAt) {
+    throw ApiError.badRequest("This campaign needs approval before it can start.", {
+      problems: ["Approve the campaign (Campaigns -> Approve) and try again."],
+    });
+  }
+
   const check = await canStartCampaign(campaign);
   if (!check.ok) {
     throw ApiError.badRequest("Campaign cannot start yet.", { problems: check.problems });

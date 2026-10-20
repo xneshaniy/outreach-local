@@ -227,13 +227,13 @@ export function Pagination({ page, pageSize, total, onPage }: { page: number; pa
 
 export function StatusBadge({ status }: { status: string }) {
   const tone =
-    ["SENT", "CONNECTED", "ACTIVE", "COMPLETED", "SUCCESS"].includes(status)
+    ["SENT", "CONNECTED", "ACTIVE", "COMPLETED", "SUCCESS", "INTERESTED"].includes(status)
       ? "green"
-      : ["FAILED", "ERROR", "DISCONNECTED", "CANCELLED"].includes(status)
+      : ["FAILED", "ERROR", "DISCONNECTED", "CANCELLED", "BOUNCED", "COMPLAINED", "INVALID", "NOT_INTERESTED"].includes(status)
         ? "red"
-        : ["QUEUED", "SCHEDULED", "SENDING", "CLAIMED", "PROCESSING"].includes(status)
+        : ["QUEUED", "SCHEDULED", "SENDING", "CLAIMED", "PROCESSING", "REPLIED"].includes(status)
           ? "blue"
-          : ["PAUSED", "HELD_TZ", "AMBIGUOUS", "SKIPPED"].includes(status)
+          : ["PAUSED", "HELD_TZ", "AMBIGUOUS", "SKIPPED", "NEEDS_INFO"].includes(status)
             ? "amber"
             : "neutral";
   return <Badge tone={tone as never}>{status.replace(/_/g, " ")}</Badge>;

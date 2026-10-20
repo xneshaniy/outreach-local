@@ -17,6 +17,8 @@ import { isWithinSendingWindow, nextSendingInstant, type SendingWindow } from ".
 import { unsubscribeUrl } from "../lib/template";
 import { gmailProvider } from "../lib/email/gmail";
 import { smtpProvider } from "../lib/email/smtp";
+import { dryRunProvider } from "../lib/email/dry-run";
+import { advanceFollowUp } from "../lib/followup";
 import type { ClaimedJob } from "../lib/queue";
 import type { EmailProvider, SendInput } from "../lib/email/provider";
 
@@ -69,22 +71,35 @@ export async function processJob(job: ClaimedJob): Promise<void> {
 
   // ---------------------------------------------------------------------------
   // 2. Recipient / contact eligibility
+  //    A follow-up job has no CampaignRecipient (it belongs to a
+  //    FollowUpMessage instead) — the checks below cover both kinds.
   // ---------------------------------------------------------------------------
   const recipient = job.campaignRecipient;
-  if (["SENT", "FAILED", "SKIPPED", "CANCELLED"].includes(recipient.status)) {
+  const followUp = job.followUpMessage;
+  if (recipient && ["SENT", "FAILED", "SKIPPED", "CANCELLED"].includes(recipient.status)) {
     await finalizeSkipped(job, `RECIPIENT_${recipient.status}`);
     return;
   }
-  if (recipient.status === "HELD_TZ") {
+  if (recipient?.status === "HELD_TZ") {
     await finalizeSkipped(job, "HELD_UNKNOWN_TIMEZONE");
+    return;
+  }
+  if (followUp && followUp.status !== "SCHEDULED") {
+    // The follow-up was cancelled (replied, unsubscribed, campaign paused).
+    await finalizeSkipped(job, `FOLLOW_UP_${followUp.status}`);
     return;
   }
 
   // ---------------------------------------------------------------------------
   // 3. Suppression + unsubscribe + contact status + frequency
   // ---------------------------------------------------------------------------
-  if (job.contact.status !== "ACTIVE") {
+  if (job.contact.status !== "ACTIVE" && job.contact.status !== "REPLIED" && job.contact.status !== "INTERESTED") {
     await finalizeSkipped(job, `CONTACT_${job.contact.status}`);
+    return;
+  }
+  if (job.contact.status === "REPLIED" || job.contact.status === "INTERESTED") {
+    // They answered — never email them again.
+    await finalizeSkipped(job, "CONTACT_ALREADY_REPLIED");
     return;
   }
   const suppression = await checkSuppression(job.userId, job.contact.emailNormalized, job.campaignId);
@@ -97,7 +112,9 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     select: { minDaysBetweenContacts: true },
   });
   const minDays = ownerSetting?.minDaysBetweenContacts ?? env.minDaysBetweenContacts;
-  if (await isTooFrequent(job.contact, minDays)) {
+  // The frequency guard is enforced by the follow-up scheduler; the first
+  // message of a campaign is always allowed.
+  if (!followUp && (await isTooFrequent(job.contact, minDays))) {
     await finalizeSkipped(job, "FREQUENCY_LIMIT");
     return;
   }
@@ -119,10 +136,12 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   if (!isWithinSendingWindow(now, zone, window)) {
     const next = nextSendingInstant(now, zone, window);
     if (!next) {
-      await prisma.campaignRecipient.update({
-        where: { id: recipient.id },
-        data: { status: "HELD_TZ", skipReason: "NO_VALID_SEND_TIME" },
-      });
+      if (recipient) {
+        await prisma.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: { status: "HELD_TZ", skipReason: "NO_VALID_SEND_TIME" },
+        });
+      }
       await releaseClaim(job.id);
       return;
     }
@@ -131,7 +150,10 @@ export async function processJob(job: ClaimedJob): Promise<void> {
         where: { id: job.id },
         data: { status: "QUEUED", claimedBy: null, leaseExpiresAt: null, scheduledAt: next },
       }),
-      prisma.campaignRecipient.update({ where: { id: recipient.id }, data: { status: "SCHEDULED", scheduledAt: next } }),
+      prisma.campaignRecipient.updateMany({
+        where: { id: recipient?.id ?? "" },
+        data: { status: "SCHEDULED", scheduledAt: next },
+      }),
     ]);
     logger.debug("Job rescheduled to recipient-local window", { jobId: job.id, next: next.toISOString() });
     return;
@@ -160,14 +182,19 @@ export async function processJob(job: ClaimedJob): Promise<void> {
 
   // ---------------------------------------------------------------------------
   // 6. Sender selection + transactional quota reservation
+  //
+  //    A dry run never contacts a provider, so it must not consume the real
+  //    daily quota either — otherwise testing would silently eat the budget.
   // ---------------------------------------------------------------------------
   const quotaDay = quotaDayKey(now, env.senderQuotaTimezone);
+  const isDryRun = env.dryRun || job.campaign.dryRun;
+
   const accounts = await prisma.senderAccount.findMany({
     where: { userId: job.userId, status: "CONNECTED" },
     orderBy: [{ lastUsedAt: "asc" }, { createdAt: "asc" }],
     take: 10,
   });
-  if (accounts.length === 0) {
+  if (accounts.length === 0 && !isDryRun) {
     await failAttempt(job, attempt.id, attemptNumber, "NO_SENDER", "No connected sender account.", "permanent", Date.now() - started);
     return;
   }
@@ -175,68 +202,75 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   let reservedFor: (typeof accounts)[number] | null = null;
   let lastQuotaError: Error | null = null;
 
-  for (const account of accounts) {
-    const cap = Math.min(account.dailyCap, env.senderDailyCapDefault);
-    try {
-      await prisma.$transaction(async (tx: TxLike) => {
-        await reserveSenderSlot(tx, account.id, cap, quotaDay);
-        await reserveCampaignSlot(tx, job.campaignId, job.campaign.dailyLimit, quotaDay);
-        await tx.sendJob.update({
-          where: { id: job.id },
-          data: { senderAccountId: account.id, provider: account.provider === "GOOGLE" ? "GMAIL" : "SMTP" },
+  if (!isDryRun) {
+    for (const account of accounts) {
+      const cap = Math.min(account.dailyCap, env.senderDailyCapDefault);
+      try {
+        await prisma.$transaction(async (tx: TxLike) => {
+          await reserveSenderSlot(tx, account.id, cap, quotaDay);
+          await reserveCampaignSlot(tx, job.campaignId, job.campaign.dailyLimit, quotaDay);
+          await tx.sendJob.update({
+            where: { id: job.id },
+            data: { senderAccountId: account.id, provider: account.provider === "GOOGLE" ? "GMAIL" : "SMTP" },
+          });
+          await tx.sendAttempt.update({ where: { id: attempt.id }, data: { senderAccountId: account.id } });
         });
-        await tx.sendAttempt.update({ where: { id: attempt.id }, data: { senderAccountId: account.id } });
-      });
-      reservedFor = account;
-      break;
-    } catch (err) {
-      if (err instanceof QuotaExceededError) {
-        lastQuotaError = err;
-        continue;
+        reservedFor = account;
+        break;
+      } catch (err) {
+        if (err instanceof QuotaExceededError) {
+          lastQuotaError = err;
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
-  }
 
-  if (!reservedFor) {
-    // Every sender is at its daily cap — requeue for the next quota day.
-    await releaseClaim(job.id, { scheduledAt: nextQuotaDay(quotaDay, env.senderQuotaTimezone) });
-    await prisma.sendAttempt.update({
-      where: { id: attempt.id },
-      data: {
-        status: "TRANSIENT_FAILURE",
-        finishedAt: new Date(),
-        errorCode: "ALL_SENDERS_AT_CAP",
-        errorMessage: lastQuotaError?.message ?? "All sender accounts reached their daily cap.",
-      },
-    });
-    logger.info("Job deferred: all senders at cap", { jobId: job.id });
-    return;
+    if (!reservedFor) {
+      // Every sender is at its daily cap — requeue for the next quota day.
+      await releaseClaim(job.id, { scheduledAt: nextQuotaDay(quotaDay, env.senderQuotaTimezone) });
+      await prisma.sendAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "TRANSIENT_FAILURE",
+          finishedAt: new Date(),
+          errorCode: "ALL_SENDERS_AT_CAP",
+          errorMessage: lastQuotaError?.message ?? "All sender accounts reached their daily cap.",
+        },
+      });
+      logger.info("Job deferred: all senders at cap", { jobId: job.id });
+      return;
+    }
   }
 
   // ---------------------------------------------------------------------------
   // 7. Render + submit
   // ---------------------------------------------------------------------------
   const token = unsubscribeUrl({ c: job.contact.id, u: job.userId, p: job.campaignId });
+  // A follow-up carries its own subject/body; the original message uses the
+  // campaign's.
+  const subjectTemplate = job.subject ?? job.campaign.subject;
+  const bodyTemplate = job.body ?? job.campaign.body;
+
   const sendInput: SendInput = {
     jobId: job.id,
     idempotencyHeader,
-    fromEmail: reservedFor.email,
-    fromName: job.campaign.fromName ?? reservedFor.displayName,
+    fromEmail: reservedFor?.email ?? job.campaign.replyTo ?? "dry-run@localhost",
+    fromName: job.campaign.fromName ?? reservedFor?.displayName,
     toEmail: job.contact.email,
     toName: [job.contact.firstName, job.contact.lastName].filter(Boolean).join(" ") || null,
     replyTo: job.campaign.replyTo,
-    subject: job.campaign.subject,
-    html: job.campaign.body,
-    text: job.campaign.body,
+    subject: subjectTemplate,
+    html: bodyTemplate,
+    text: bodyTemplate,
     unsubscribeUrl: token,
   };
 
   // Render personalization (the stored body is the template source).
   const { renderEmail } = await import("../lib/template");
   const rendered = renderEmail({
-    subject: job.campaign.subject,
-    body: job.campaign.body,
+    subject: subjectTemplate,
+    body: bodyTemplate,
     contact: job.contact,
     unsubscribeUrl: token,
   });
@@ -244,10 +278,10 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   sendInput.html = rendered.html;
   sendInput.text = rendered.text;
 
-  const provider = providerFor(reservedFor);
+  const provider = isDryRun ? dryRunProvider : providerFor(reservedFor!);
   let outcome;
   try {
-    outcome = await provider.send(reservedFor, sendInput);
+    outcome = await provider.send(reservedFor!, sendInput);
   } catch (err) {
     // A thrown error during submit is ambiguous by definition.
     logger.error("Provider threw during send", { jobId: job.id, error: (err as Error).message });
@@ -259,31 +293,76 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   // 8. Settle
   // ---------------------------------------------------------------------------
   if (outcome.kind === "ok") {
+    const sentAt = new Date();
     await prisma.$transaction(async (tx: TxLike) => {
-      await settleSenderSlot(tx, reservedFor!.id, quotaDay);
+      if (!isDryRun) {
+        await settleSenderSlot(tx, reservedFor!.id, quotaDay);
+      }
       await tx.sendAttempt.update({
         where: { id: attempt.id },
         data: {
           status: "SUCCESS",
           providerMessageId: outcome.messageId,
-          finishedAt: new Date(),
+          finishedAt: sentAt,
           latencyMs: Date.now() - started,
         },
       });
       await tx.sendJob.update({
         where: { id: job.id },
-        data: { status: "SENT", providerMessageId: outcome.messageId, attempts: attemptNumber, lastError: null, ambiguousSince: null },
+        data: {
+          status: "SENT",
+          providerMessageId: outcome.messageId,
+          attempts: attemptNumber,
+          lastError: null,
+          ambiguousSince: null,
+          dryRun: isDryRun,
+        },
       });
-      await tx.campaignRecipient.update({
-        where: { id: recipient.id },
-        data: { status: "SENT", sentAt: new Date(), lastError: null },
-      });
-      await tx.contact.update({
-        where: { id: job.contactId },
-        data: { lastSentAt: new Date(), sentCount: { increment: 1 } },
-      });
+      if (recipient) {
+        await tx.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: { status: "SENT", sentAt, lastError: null },
+        });
+      }
+      if (followUp) {
+        await tx.followUpMessage.update({
+          where: { id: followUp.id },
+          data: { status: "SENT", sentAt, failureReason: null },
+        });
+      }
+      if (!isDryRun) {
+        await tx.contact.update({
+          where: { id: job.contactId },
+          data: { lastSentAt: sentAt, sentCount: { increment: 1 } },
+        });
+      }
     });
-    logger.info("Job sent", { jobId: job.id, provider: provider.name, attempt: attemptNumber });
+    logger.info(isDryRun ? "Job rendered (dry run)" : "Job sent", {
+      jobId: job.id,
+      provider: provider.name,
+      attempt: attemptNumber,
+      dryRun: isDryRun,
+    });
+
+    // Schedule the next follow-up step (if the campaign has a sequence).
+    // A dry run does not schedule anything: the follow-up chain only starts
+    // after a real delivery.
+    if (!isDryRun) {
+      try {
+        await advanceFollowUp({
+          userId: job.userId,
+          campaign: job.campaign,
+          contact: job.contact,
+          sentAt,
+          minDaysBetweenContacts: minDays,
+        });
+      } catch (err) {
+        logger.error("Could not schedule the next follow-up", {
+          jobId: job.id,
+          error: (err as Error).message,
+        });
+      }
+    }
     return;
   }
 
@@ -296,8 +375,10 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     const attempts = attemptNumber;
     const exhausted = attempts >= job.maxAttempts;
     await prisma.$transaction(async (tx: TxLike) => {
-      await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
-      await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+      if (!isDryRun) {
+        await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
+        await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+      }
       await tx.sendAttempt.update({
         where: { id: attempt.id },
         data: {
@@ -314,10 +395,18 @@ export async function processJob(job: ClaimedJob): Promise<void> {
           where: { id: job.id },
           data: { status: "FAILED", attempts, lastError: outcome.message, errorCode: outcome.code },
         });
-        await tx.campaignRecipient.update({
-          where: { id: recipient.id },
-          data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
-        });
+        if (recipient) {
+          await tx.campaignRecipient.update({
+            where: { id: recipient.id },
+            data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
+          });
+        }
+        if (followUp) {
+          await tx.followUpMessage.update({
+            where: { id: followUp.id },
+            data: { status: "FAILED", failureReason: outcome.message },
+          });
+        }
       } else {
         await tx.sendJob.update({
           where: { id: job.id },
@@ -339,8 +428,10 @@ export async function processJob(job: ClaimedJob): Promise<void> {
 
   // permanent
   await prisma.$transaction(async (tx: TxLike) => {
-    await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
-    await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+    if (!isDryRun) {
+      await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
+      await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+    }
     await tx.sendAttempt.update({
       where: { id: attempt.id },
       data: {
@@ -356,10 +447,18 @@ export async function processJob(job: ClaimedJob): Promise<void> {
       where: { id: job.id },
       data: { status: "FAILED", attempts: attemptNumber, lastError: outcome.message, errorCode: outcome.code },
     });
-    await tx.campaignRecipient.update({
-      where: { id: recipient.id },
-      data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
-    });
+    if (recipient) {
+      await tx.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
+      });
+    }
+    if (followUp) {
+      await tx.followUpMessage.update({
+        where: { id: followUp.id },
+        data: { status: "FAILED", failureReason: outcome.message },
+      });
+    }
   });
   logger.warn("Permanent send failure", { jobId: job.id, code: outcome.code });
 }
@@ -381,15 +480,24 @@ async function releaseClaim(jobId: string, extra?: { scheduledAt: Date }): Promi
 }
 
 async function finalizeSkipped(job: ClaimedJob, reason: string, detail?: string): Promise<void> {
+  const message = detail ? `${reason}: ${detail}` : reason;
   await prisma.$transaction([
     prisma.sendJob.update({
       where: { id: job.id },
-      data: { status: "SKIPPED", lastError: detail ? `${reason}: ${detail}` : reason, claimedBy: null, leaseExpiresAt: null },
+      data: { status: "SKIPPED", lastError: message, claimedBy: null, leaseExpiresAt: null },
     }),
     prisma.campaignRecipient.updateMany({
       where: { campaignId: job.campaignId, contactId: job.contactId, status: { notIn: ["SENT"] } },
       data: { status: "SKIPPED", skippedAt: new Date(), skipReason: reason },
     }),
+    ...(job.followUpMessage
+      ? [
+          prisma.followUpMessage.updateMany({
+            where: { id: job.followUpMessage.id, status: "SCHEDULED" },
+            data: { status: "SKIPPED", cancelReason: reason },
+          }),
+        ]
+      : []),
   ]);
 }
 
@@ -413,7 +521,8 @@ async function markAmbiguous(
       where: { id: job.id },
       data: { status: "AMBIGUOUS", attempts: attemptNumber, ambiguousSince: new Date(), lastError: message, errorCode: code },
     }),
-    prisma.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "SENDING", lastError: message } }),
+    // A follow-up job has no campaign recipient � the empty id matches nothing.
+    prisma.campaignRecipient.updateMany({ where: { id: job.campaignRecipientId ?? "" }, data: { status: "SENDING", lastError: message } }),
   ]);
   logger.warn("Job marked AMBIGUOUS — reconciliation required", { jobId: job.id, code });
 }
@@ -442,8 +551,8 @@ async function failAttempt(
       where: { id: job.id },
       data: { status: "FAILED", attempts: attemptNumber, lastError: message, errorCode: code },
     }),
-    prisma.campaignRecipient.update({
-      where: { id: job.campaignRecipientId },
+    prisma.campaignRecipient.updateMany({
+      where: { id: job.campaignRecipientId ?? "" },
       data: { status: "FAILED", failedAt: new Date(), lastError: message },
     }),
   ]);
@@ -497,8 +606,8 @@ export async function reconcileAmbiguousJob(job: ClaimedJob): Promise<"sent" | "
         where: { id: job.id },
         data: { status: "SENT", lastError: null, ambiguousSince: null },
       });
-      await tx.campaignRecipient.update({
-        where: { id: job.campaignRecipientId },
+      await tx.campaignRecipient.updateMany({
+        where: { id: job.campaignRecipientId ?? "" },
         data: { status: "SENT", sentAt: new Date(), lastError: null },
       });
       await tx.contact.update({
@@ -523,13 +632,13 @@ export async function reconcileAmbiguousJob(job: ClaimedJob): Promise<"sent" | "
       const exhausted = job.attempts >= job.maxAttempts;
       if (exhausted) {
         await tx.sendJob.update({ where: { id: job.id }, data: { status: "FAILED", ambiguousSince: null, lastError: "Reconciled as not sent; attempts exhausted." } });
-        await tx.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "FAILED", failedAt: new Date() } });
+        await tx.campaignRecipient.updateMany({ where: { id: job.campaignRecipientId ?? "" }, data: { status: "FAILED", failedAt: new Date() } });
       } else {
         await tx.sendJob.update({
           where: { id: job.id },
           data: { status: "QUEUED", ambiguousSince: null, scheduledAt: new Date(Date.now() + backoffDelayMs(job.attempts)) },
         });
-        await tx.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "QUEUED" } });
+        await tx.campaignRecipient.updateMany({ where: { id: job.campaignRecipientId ?? "" }, data: { status: "QUEUED" } });
       }
     });
     return "requeued";

@@ -606,9 +606,12 @@ payloads. Idempotent on `(provider, externalId)`.
 | GET, POST | `/api/campaigns` | Session |
 | GET, PATCH, DELETE | `/api/campaigns/:id` | Session |
 | GET, POST | `/api/campaigns/:id/contacts` | Session |
+| GET | `/api/campaigns/:id/preview` | Session |
 | POST | `/api/campaigns/:id/start` | Session |
 | POST | `/api/campaigns/:id/pause` | Session |
 | POST | `/api/campaigns/:id/resume` | Session |
+| POST | `/api/campaigns/:id/approve` | Session |
+| POST | `/api/campaigns/:id/archive` | Session |
 | POST | `/api/campaigns/:id/schedule` | Session |
 | GET | `/api/campaigns/:id/stats` | Session |
 | POST | `/api/campaigns/:id/duplicate` | Session |
@@ -616,9 +619,17 @@ payloads. Idempotent on `(provider, externalId)`.
 | GET, POST | `/api/contacts` | Session |
 | GET, PATCH, DELETE | `/api/contacts/:id` | Session |
 | POST | `/api/contacts/import` | Session |
+| GET | `/api/contacts/export` | Session (CSV download) |
+| GET, POST, DELETE | `/api/services` | Session |
+| GET, PATCH, DELETE | `/api/services/:id` | Session |
+| GET, POST | `/api/follow-ups` | Session |
+| GET, PATCH, DELETE | `/api/follow-ups/:id` | Session |
+| GET | `/api/replies` | Session |
+| PATCH | `/api/replies/:id` | Session |
 | GET, POST | `/api/senders` | Session |
 | PATCH, DELETE | `/api/senders/:id` | Session |
 | POST | `/api/senders/:id/pause` | Session |
+| POST | `/api/senders/test` | Session |
 | POST | `/api/senders/:id/resume` | Session |
 | GET, POST | `/api/templates` | Session |
 | GET, PATCH, DELETE | `/api/templates/:id` | Session |
@@ -633,3 +644,212 @@ payloads. Idempotent on `(provider, externalId)`.
 | GET | `/api/health` | Public |
 | GET, POST | `/api/unsubscribe` | Public |
 | POST | `/api/webhooks/gmail` | Public (signature-verified) |
+
+---
+
+## Services — `/api/services`
+
+A **service** is one business line the workspace offers (lead generation,
+virtual assistance, CRM automation, email outreach, e-commerce, ...). It holds
+the description, target industries, ideal customer profile, default subject,
+default body and call to action used to seed new campaigns and templates.
+
+### `GET /api/services`
+Lists the workspace's services.
+
+| Query | Meaning |
+|---|---|
+| `seedIfEmpty=true` | Create the starter profiles when the workspace has none (idempotent). |
+
+```json
+{
+  "services": [
+    {
+      "id": "cm123",
+      "name": "Lead Generation & List Building",
+      "slug": "lead-generation",
+      "description": "Research, qualify and deliver clean, targeted prospect lists ...",
+      "targetIndustries": ["SaaS", "Agencies"],
+      "idealCustomerProfile": "B2B companies with a sales team ...",
+      "defaultSubject": "A {{company}}-focused list of {{target_industry}} decision makers",
+      "defaultBody": "<p>Hi {{first_name}}, ...</p>",
+      "defaultCta": "Could I send you a 10-row sample?",
+      "color": "#6366f1",
+      "isActive": true,
+      "_count": { "campaigns": 2, "templates": 1, "sequences": 1 }
+    }
+  ]
+}
+```
+
+### `POST /api/services`
+Creates a service. The slug is derived from the name and made unique inside the
+workspace.
+
+```json
+{
+  "name": "CRM Management & Automation",
+  "description": "...",
+  "targetIndustries": ["Sales teams"],
+  "idealCustomerProfile": "...",
+  "defaultSubject": "...",
+  "defaultBody": "...",
+  "defaultCta": "...",
+  "color": "#10b981",
+  "isActive": true
+}
+```
+
+### `GET|PATCH|DELETE /api/services/:id`
+Reads, updates or deletes one service. Deleting keeps the campaigns and
+templates (the relation is `ON DELETE SET NULL`).
+
+---
+
+## Follow-up sequences — `/api/follow-ups`
+
+A sequence is a list of steps ("day 3 bump", "day 7 last call"). When a
+campaign with that sequence delivers its first email, the first step is
+scheduled for each recipient; when that step is delivered the next one is
+scheduled, and so on.
+
+Every pending follow-up is **cancelled automatically** when the contact
+replies, unsubscribes, bounces, complains, is suppressed, or when the campaign
+is paused, cancelled or archived.
+
+### `GET /api/follow-ups`
+Lists the sequences with their steps, the campaigns using them and a
+`statusCounts` breakdown of the follow-up messages.
+
+### `POST /api/follow-ups`
+Creates a sequence. The step positions must be unique.
+
+```json
+{
+  "name": "Two polite bumps",
+  "serviceId": "cm123",
+  "isActive": true,
+  "steps": [
+    { "order": 1, "delayDays": 3, "subject": "Quick follow-up", "body": "<p>Hi {{first_name}} ...</p>" },
+    { "order": 2, "delayDays": 5, "subject": "Closing the loop", "body": "<p>Hi {{first_name}} ...</p>" }
+  ]
+}
+```
+
+### `GET|PATCH|DELETE /api/follow-ups/:id`
+Reads, updates or deletes one sequence. Updating replaces the steps; steps that
+already have scheduled messages are preserved so nothing is lost mid-flight.
+
+---
+
+## Replies — `/api/replies`
+
+Received replies are matched to a **contact** (by the sender address) and to a
+**campaign** (by the most recent message we sent to that contact). A reply
+marks the contact `REPLIED` and cancels their pending follow-ups and queued
+messages.
+
+### `GET /api/replies`
+Lists the replies.
+
+| Query | Meaning |
+|---|---|
+| `page`, `pageSize` | Pagination. |
+| `search` | Matches the subject, sender address or snippet. |
+| `unread=true` | Only unread replies. |
+| `poll=true` | Ask the connected **Gmail** accounts to fetch new inbox messages first. |
+
+The response includes `pollSupported` — SMTP accounts cannot be polled, so
+their replies must be recorded by hand and the UI says so.
+
+### `PATCH /api/replies/:id`
+Marks a reply read, classifies it, or attaches it to a contact manually.
+
+```json
+{ "isRead": true, "outcome": "INTERESTED", "contactId": "ct123" }
+```
+
+Outcomes: `INTERESTED`, `NOT_INTERESTED`, `NEEDS_INFO`, `OTHER`.
+
+---
+
+## Campaign extras
+
+### `GET /api/campaigns/:id/preview`
+Renders the campaign exactly as the worker will send it (same template engine,
+same unsubscribe link) and reports the personalisation coverage.
+
+| Query | Meaning |
+|---|---|
+| `contactId` | Which contact to preview (defaults to the first one). |
+
+```json
+{
+  "preview": { "to": "ada@example.com", "subject": "Quick question for Ada", "html": "…", "unsubscribeUrl": "…" },
+  "personalization": {
+    "body": { "variables": ["company", "first_name"], "missing": [], "partial": [], "contactsChecked": 8, "coverage": { "first_name": 8 } },
+    "subject": { "…": "…" },
+    "problems": ["No contact has a value for: title. Those placeholders will render as empty text."]
+  },
+  "audienceSize": 8
+}
+```
+
+### `POST /api/campaigns/:id/approve`
+Approves (or revokes approval for) a campaign created with
+`requiresApproval`. A campaign that requires approval cannot start until it is
+approved. Changing the subject or body clears a previous approval.
+
+```json
+{ "approved": true }
+```
+
+### `POST /api/campaigns/:id/archive`
+Archives the campaign: it is hidden from the default list, no more messages go
+out and the pending follow-ups are cancelled. The history is kept.
+
+```
+POST /api/campaigns/:id/archive?action=restore
+```
+
+---
+
+## Contact export — `GET /api/contacts/export`
+
+Downloads the contact list as CSV. It honours the same filters as
+`/api/contacts` (`search`, `status`, `source`) plus `tags` and
+`campaignId`. The file is generated from the database, never from the browser.
+
+Response headers: `Content-Type: text/csv`, `Content-Disposition:
+attachment`, `Cache-Control: no-store`. Cells that could be interpreted as a
+spreadsheet formula are prefixed with an apostrophe.
+
+---
+
+## Sender connection test — `POST /api/senders/test`
+
+Performs a **real** connection check (no message is sent).
+
+```json
+{ "accountId": "sa123" }
+```
+
+or, for credentials you have not saved yet:
+
+```json
+{ "host": "smtp.example.com", "port": 587, "secure": false, "username": "u", "password": "p" }
+```
+
+Gmail accounts are checked with `users.getProfile`; SMTP accounts are checked
+with `transporter.verify()` (connect + authenticate). The response always has
+HTTP 200 and a body of the shape:
+
+```json
+{ "ok": true, "provider": "SMTP", "message": "SMTP connection and authentication succeeded." }
+```
+
+or, on failure:
+
+```json
+{ "ok": false, "provider": "SMTP", "error": "…", "hint": "Check the host, port, security mode and credentials." }
+```
