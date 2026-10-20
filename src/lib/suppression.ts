@@ -50,26 +50,39 @@ export async function addSuppression(input: {
   tx?: Prisma.TransactionClient;
 }): Promise<{ created: boolean }> {
   const db = input.tx ?? prisma;
-  try {
-    await db.suppression.create({
-      data: {
-        userId: input.userId,
-        emailNormalized: input.emailNormalized,
-        scope: input.scope,
-        campaignId: input.campaignId ?? null,
-        reason: input.reason,
-        source: input.source,
-      },
-    });
-    return { created: true };
-  } catch (err) {
-    // Unique partial index violation → already suppressed (idempotent).
-    if ((err as { code?: string })?.code === "P2002") {
-      return { created: false };
-    }
-    logger.error("Failed to add suppression", { error: (err as Error).message });
-    throw err;
-  }
+
+  // Use raw SQL with ON CONFLICT DO NOTHING to avoid transaction abort on partial unique indexes.
+  // The partial unique indexes in the migration are:
+  // - global: ("userId", "emailNormalized") WHERE scope='GLOBAL' AND "campaignId" IS NULL
+  // - campaign: ("campaignId", "emailNormalized") WHERE scope='CAMPAIGN' AND "campaignId" IS NOT NULL
+  // Note: Prisma uses camelCase column names in the database. Enum values need explicit cast.
+  const conflictTarget =
+    input.scope === "GLOBAL"
+      ? '("userId", "emailNormalized") WHERE scope = \'GLOBAL\' AND "campaignId" IS NULL'
+      : '("campaignId", "emailNormalized") WHERE scope = \'CAMPAIGN\' AND "campaignId" IS NOT NULL';
+
+  const columns = ['id', '"userId"', '"emailNormalized"', 'scope', '"campaignId"', 'reason', 'source'];
+  // Cast enum values: scope::"SuppressionScope", reason::"SuppressionReason"
+  // Generate UUID for id
+  const placeholders = ['gen_random_uuid()::text', '$1', '$2', '$3::"SuppressionScope"', '$4', '$5::"SuppressionReason"', '$6'].join(', ');
+  const values = [
+    input.userId,
+    input.emailNormalized,
+    input.scope,
+    input.campaignId ?? null,
+    input.reason,
+    input.source ?? null,
+  ];
+
+  const sql = `
+    INSERT INTO "Suppression" (${columns.join(', ')})
+    VALUES (${placeholders})
+    ON CONFLICT ${conflictTarget} DO NOTHING
+  `;
+
+  const result = await db.$executeRawUnsafe(sql, ...values);
+  // result is the number of rows inserted (1 if created, 0 if conflict)
+  return { created: result > 0 };
 }
 
 /**
