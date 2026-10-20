@@ -30,6 +30,9 @@ may not have been sent is never blindly retried.
 - [Database design & duplicate prevention](#database-design--duplicate-prevention)
 - [Scheduling model](#scheduling-model)
 - [Compliance](#compliance)
+- [Client portal](#client-portal)
+- [Open & click tracking](#open--click-tracking)
+- [Tracking & provider support matrix](docs/TRACKING.md)
 - [API](#api)
 - [Testing](#testing)
 - [Deployment](#deployment)
@@ -94,6 +97,43 @@ may not have been sent is never blindly retried.
 - Sending windows and time zones apply to follow-ups too.
 - Overlapping workers can never process the same job.
 
+### Client portal
+- **Separate client accounts** with their own login, password and dashboard
+  (`/portal`). A client never sees the workspace owner's interface.
+- **Explicit campaign assignment** — an administrator assigns campaigns to a
+  client; a client sees only those, and nothing else.
+- **Server-side access enforcement.** Every portal query is filtered by the
+  assignment list, so another client's campaign cannot be reached through a
+  URL, an export, an API call or a query parameter (a request for it returns
+  404, never a hint that it exists).
+- **Client-specific reports**: totals, per-campaign breakdown, daily charts,
+  CSV export and a printable report — with date filters.
+- Deactivating a client or changing their password ends their sessions
+  immediately.
+
+### Open & click tracking
+
+> Which metrics each provider actually supports — see
+> [`docs/TRACKING.md`](docs/TRACKING.md).
+- **Opt-in per campaign** (`trackingEnabled` / `clickTrackingEnabled`) — off by
+  default, so nothing is tracked without a decision.
+- **Open tracking** adds a 1x1 tracking pixel whose URL carries a signed
+  token; the token cannot be forged or guessed.
+- **Click tracking** rewrites the links to a signed redirect; the unsubscribe
+  link is never rewritten, so opting out always works.
+- **Unique vs. total** are counted separately: the dedupe key is set only on
+  the first event, so repeats are still recorded but do not inflate the
+  unique count.
+- **Automated traffic is classified** (HUMAN / PREVIEW / BOT) using the user
+  agent and the source address; bots and known image proxies are excluded from
+  the rates.
+- **The rates are labelled as approximate everywhere.** Apple Mail Privacy
+  Protection, image blocking and security scanners trigger tracking
+  automatically — an open is never presented as proof that a person read the
+  message.
+- Metrics the provider does not report (delivery) are shown as **"not
+  available"** rather than invented.
+
 ### Replies and inbox
 - Real Gmail inbox polling (`users.messages.list` + `messages.get` using the
   `gmail.readonly` scope granted at connect time).
@@ -125,6 +165,10 @@ may not have been sent is never blindly retried.
   lease reclamation and exponential backoff with jitter.
 - **Never-blind-retry** — a timeout *after* the provider accepted a message
   leaves the job `AMBIGUOUS` and requires reconciliation before any resend.
+- **Client portal** — separate client logins, explicit campaign assignment,
+  server-enforced data isolation and client-specific reports.
+- **Open & click tracking** — signed tracking pixel and link rewriting, unique
+  vs. total counting, bot/preview classification, opt-in per campaign.
 - **Security** — encrypted provider tokens at rest (AES-256-GCM), session
   cookies (HttpOnly, HMAC-signed JWT), CSRF origin checks, rate limiting and
   header-injection guards.
@@ -446,8 +490,9 @@ src/
   app/                 Next.js App Router
     api/               Route handlers (REST)
     (app)/             Dashboard pages: services, campaigns, contacts,
-                       follow-ups, replies, senders, templates, queue,
+                       follow-ups, replies, clients, senders, templates, queue,
                        analytics, suppressions, settings, audit
+    portal/            The client portal (separate login + reports)
   lib/
     auth/              password hashing, sessions, guards
     email/             provider abstraction, gmail, smtp, dry-run, reply poller
@@ -459,6 +504,9 @@ src/
     replies.ts         reply matching, recording, and their side effects
     services.ts        service profiles (one per business line)
     personalization.ts personalisation coverage analysis
+    tracking.ts        open/click tracking: signed tokens, pixel, bot detection
+    metrics.ts         campaign performance metrics and the daily series
+    portal.ts          client-portal access helpers (the single access check)
     crypto.ts          AES-256-GCM helpers
     env.ts             validated environment
   worker/              background sender + reconciliation

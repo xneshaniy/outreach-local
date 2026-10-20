@@ -10,7 +10,25 @@ const PUBLIC_PATHS = [
   "/api/webhooks",
   // Liveness/readiness probe — must stay reachable by load balancers.
   "/api/health",
+  // The client portal has its own session; its pages are guarded by that
+  // session on the server, not by the owner cookie this middleware checks.
+  "/portal/login",
+  "/api/auth/client-login",
+  // Tracking pixels and click redirects are fetched by mail clients, which are
+  // not logged in. The tokens are signed, so nothing can be forged.
+  "/api/track",
 ];
+
+/**
+ * The client portal uses its own cookie and its own guard, so the owner
+ * middleware must not block it. The portal routes re-check the client session
+ * on the server for every request.
+ */
+const PORTAL_PREFIXES = ["/portal", "/api/portal"];
+
+function isPortalPath(pathname: string): boolean {
+  return PORTAL_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
 
 /**
  * Decode a JWT payload WITHOUT verifying the signature.
@@ -52,6 +70,10 @@ export async function middleware(req: NextRequest) {
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   if (isPublic) return NextResponse.next();
+
+  // The client portal has its own authentication (a separate cookie and
+  // server-side guard), so it is not gated by the owner session here.
+  if (isPortalPath(pathname)) return NextResponse.next();
 
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   if (!hasUsableSession(token)) {

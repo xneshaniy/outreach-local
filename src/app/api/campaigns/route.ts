@@ -98,6 +98,8 @@ export const POST = handleApi(async (req: NextRequest) => {
       endAt: body.endAt ?? null,
       requiresApproval: body.requiresApproval,
       dryRun: body.dryRun,
+      trackingEnabled: body.trackingEnabled,
+      clickTrackingEnabled: body.clickTrackingEnabled,
     },
   });
 

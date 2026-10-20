@@ -109,6 +109,44 @@ Then set `DRY_RUN="false"` and restart the worker.
 
 ---
 
+## 2c. Client portal and tracking
+
+### Create the client accounts
+
+```bash
+# In the app: Clients -> Add client
+# ...or directly:
+node -e "..."   # see /api/clients
+```
+
+Each client gets its own password (at least 10 characters). The client signs
+in at `/portal/login` and only sees the campaigns an administrator assigns
+to them.
+
+### Assignment
+
+`Clients -> Campaigns` assigns a campaign to a client. Assignment is
+explicit and is the only access rule; a client with no assignment sees an
+empty portal, and a request for somebody else's campaign returns 404.
+
+### Tracking
+
+Tracking is **off by default**. Enable it per campaign
+(`Settings -> Track opens / Track clicks`). It works with any provider
+because the pixel and the click redirect are served by this application — but
+it measures what the recipient's mail client chooses to report, so the open
+rate is an approximation.
+
+The **Gmail API and plain SMTP do not report per-message delivery**, so the
+"Delivered" figure shows as *not available* and the open/click rate uses
+*sent (accepted by the provider)* as the denominator. That is stated on every
+screen and in the CSV export — no number is ever invented.
+
+See [`TRACKING.md`](TRACKING.md) for the full support matrix, the privacy
+requirements and how to verify the tracking works.
+
+---
+
 ## 3. Environment
 
 Set at minimum:

@@ -33,6 +33,8 @@ type Campaign = {
   approvedAt: string | null;
   serviceId: string | null;
   followUpSequenceId: string | null;
+  trackingEnabled: boolean;
+  clickTrackingEnabled: boolean;
   windowStartMinute: number;
   windowEndMinute: number;
   sendingDays: number[];
@@ -208,6 +210,8 @@ export default function CampaignDetailPage() {
     followUpSequenceId: "",
     dryRun: false,
     requiresApproval: false,
+    trackingEnabled: false,
+    clickTrackingEnabled: false,
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsErrs, setSettingsErrs] = useState<Record<string, string>>({});
@@ -239,6 +243,8 @@ export default function CampaignDetailPage() {
           followUpSequenceId: d.campaign.followUpSequenceId ?? "",
           dryRun: d.campaign.dryRun,
           requiresApproval: d.campaign.requiresApproval,
+          trackingEnabled: d.campaign.trackingEnabled,
+          clickTrackingEnabled: d.campaign.clickTrackingEnabled,
         });
       })
       .catch((err) => setLoadError(errorMessage(err)));
@@ -443,6 +449,8 @@ export default function CampaignDetailPage() {
       payload.followUpSequenceId = settings.followUpSequenceId || null;
       payload.dryRun = settings.dryRun;
       payload.requiresApproval = settings.requiresApproval;
+      payload.trackingEnabled = settings.trackingEnabled;
+      payload.clickTrackingEnabled = settings.clickTrackingEnabled;
       if (settings.timeZoneFallback === "FALLBACK") payload.fallbackTimeZone = settings.fallbackTimeZone.trim();
       await api(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
       toast.push("success", "Settings saved.");
@@ -950,6 +958,41 @@ export default function CampaignDetailPage() {
                   <span className="block text-xs text-[var(--muted)]">
                     The campaign cannot be started until it is approved. Changing the subject or body
                     clears a previous approval.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-lg border border-[var(--border)] p-3">
+              <p className="text-sm font-medium">Tracking</p>
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.trackingEnabled}
+                  onChange={(e) => setSettings((s) => ({ ...s, trackingEnabled: e.target.checked }))}
+                  className="mt-1 h-4 w-4"
+                />
+                <span>
+                  <span className="text-sm font-medium">Track opens</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    Adds a 1x1 tracking pixel to the message. Open data is approximate: Apple Mail
+                    Privacy Protection, image blocking and security scanners trigger it automatically,
+                    so an open is not proof that a person read the message.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.clickTrackingEnabled}
+                  onChange={(e) => setSettings((s) => ({ ...s, clickTrackingEnabled: e.target.checked }))}
+                  className="mt-1 h-4 w-4"
+                />
+                <span>
+                  <span className="text-sm font-medium">Track clicks</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    Rewrites the links in the message so they go through the tracker. The unsubscribe
+                    link is never rewritten.
                   </span>
                 </span>
               </label>

@@ -47,6 +47,9 @@ queue, rate limiter, idempotency store and quota accounting all live in PostgreS
 | Reply tracking | `src/lib/replies.ts`, `src/lib/email/reply-poller.ts` | Matches a reply to a contact + campaign and applies its side effects. |
 | Personalisation analysis | `src/lib/personalization.ts` | Reports which template variables the audience cannot fill in. |
 | Dry-run provider | `src/lib/email/dry-run.ts` | Renders a message without contacting a provider. |
+| Tracking | `src/lib/tracking.ts` | Signed open/click tokens, the pixel, link rewriting and bot detection. |
+| Performance metrics | `src/lib/metrics.ts` | Campaign metrics and the daily series, computed from real rows only. |
+| Client portal | `src/lib/portal.ts`, `src/lib/auth/client-session.ts` | Client sessions and the single place access is decided. |
 | Client helper | `src/lib/client/api.ts` | Browser-side fetch wrapper (`apiFetch`) |
 
 ## 1b. Feature pipeline: services, follow-ups, replies, dry run
@@ -107,6 +110,46 @@ provider for `dryRunProvider`. The pipeline is otherwise identical, but:
 
 New campaigns are created in dry-run mode, so a fresh install cannot send
 anything until the operator turns it off.
+
+## 1c. Client portal and tracking
+
+### Client portal
+
+A `Client` is a separate account from the workspace owner. It has its own
+password hash, its own session cookie (`eop_client_session`), its own JWT
+issuer (`email-outreach-client`) and its own `sessionVersion`. A client token
+can never be mistaken for an owner token.
+
+`ClientCampaignAccess` is the **only** access rule: a client sees a campaign
+if and only if there is a row linking it. `src/lib/portal.ts` resolves that
+list once per request and every portal query is filtered by it, so:
+
+- another client's campaign returns **404** (not 403 — no existence leak),
+- exports and printable reports are filtered the same way,
+- a URL that guesses an id cannot widen the scope.
+
+The portal API is separate from the owner API (`/api/portal/*`), and the Edge
+middleware does not gate it with the owner cookie — the portal's own guard does
+that on the server.
+
+### Tracking
+
+`TrackingEvent` stores every open and click. `dedupeKey` is set **only on
+the first event of its kind** (open per recipient, click per recipient+link).
+A Postgres unique index allows many NULLs, so repeats are recorded for the
+total without inflating the unique count.
+
+- The pixel URL and the click URL carry an **HMAC-signed token** binding the
+  campaign, the recipient and (for clicks) the target URL. A forged token is
+  ignored, and a click token cannot be replayed as an open.
+- The unsubscribe link is **never** rewritten by click tracking.
+- Every event is classified `HUMAN`, `PREVIEW` or `BOT` from the user
+  agent and the source address. Bots and known image proxies are excluded from
+  the unique counts.
+- `SendJob.deliveredAt` records a provider-confirmed delivery. It stays NULL
+  when the provider does not report it — the reporting layer then says
+  "not available" and uses *sent* as the rate denominator, rather than
+  inventing a number.
 
 ## 2. Request flow
 

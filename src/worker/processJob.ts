@@ -278,6 +278,28 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   sendInput.html = rendered.html;
   sendInput.text = rendered.text;
 
+  // ---------------------------------------------------------------------------
+  // 7b. Tracking (opt-in per campaign)
+  //
+  // The pixel and the tracked links are added to the RENDERED body, so they
+  // carry this recipient's id. Click tracking never touches the unsubscribe
+  // link, so opting out always works.
+  // ---------------------------------------------------------------------------
+  if (job.campaign.clickTrackingEnabled) {
+    const { rewriteLinksForTracking } = await import("../lib/tracking");
+    sendInput.html = rewriteLinksForTracking(sendInput.html, job.campaignId, job.contactId, {
+      // The unsubscribe link must keep working exactly as before.
+      skipUrls: [token],
+    });
+  }
+  if (job.campaign.trackingEnabled) {
+    const { buildOpenPixelUrl, injectTrackingPixel } = await import("../lib/tracking");
+    sendInput.html = injectTrackingPixel(
+      sendInput.html,
+      buildOpenPixelUrl(job.campaignId, job.contactId),
+    );
+  }
+
   const provider = isDryRun ? dryRunProvider : providerFor(reservedFor!);
   let outcome;
   try {

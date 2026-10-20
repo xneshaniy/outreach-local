@@ -853,3 +853,162 @@ or, on failure:
 ```json
 { "ok": false, "provider": "SMTP", "error": "…", "hint": "Check the host, port, security mode and credentials." }
 ```
+
+---
+
+## Client portal — `/api/portal/*`
+
+Every route below requires a **client session** (the `eop_client_session`
+cookie), which is separate from the workspace owner's session. The portal
+session is issued by `POST /api/auth/client-login` and is validated against
+the database on every request, so deactivating a client or changing their
+password ends their sessions immediately.
+
+Access rule: a client sees a campaign **if and only if** there is a
+`ClientCampaignAccess` row for it. Every query is filtered by that list, so
+another client's campaign cannot be reached through a URL, an export, an API
+call or a query parameter — the request returns **404**, never a hint that
+the campaign exists.
+
+### `GET /api/portal/summary`
+The dashboard totals for the client.
+
+| Query | Meaning |
+|---|---|
+| `days` | Reporting window in days (default 30, max 365). |
+| `since`, `until` | Explicit date range (ISO). |
+
+```json
+{
+  "client": { "name": "Acme Ltd", "email": "client@example.com", "company": "Acme Ltd" },
+  "range": { "since": "2026-01-01T00:00:00.000Z", "until": "2026-01-31T00:00:00.000Z" },
+  "campaigns": 2,
+  "totals": {
+    "sent": 120,
+    "delivered": 0,
+    "deliveredKnown": false,
+    "uniqueOpens": 44,
+    "totalOpens": 61,
+    "openRate": 36.7,
+    "uniqueClicks": 9,
+    "totalClicks": 12,
+    "clickRate": 7.5,
+    "replies": 5,
+    "replyRate": 4.2,
+    "bounced": 2,
+    "failed": 1,
+    "unsubscribed": 3,
+    "recipients": 130,
+    "pending": 10,
+    "rateDenominator": "sent"
+  },
+  "availability": { "delivered": false, "opens": true, "clicks": true }
+}
+```
+
+`deliveredKnown` is `false` when no provider confirmed delivery — the rate
+denominator is then `sent` (accepted by the provider), and the UI says so.
+
+### `GET /api/portal/campaigns`
+The campaigns assigned to the client, each with the same metrics.
+
+### `GET /api/portal/campaigns/:id`
+The full report for one assigned campaign: the campaign, the metrics, the
+daily series and the most-clicked links. Returns 404 for a campaign that was
+not assigned to this client.
+
+### `GET /api/portal/reports/export`
+CSV download of the client's reports. Honours `days`, `since` and `until`.
+Unavailable metrics are exported as the literal text `not available` so they
+are never confused with a real zero. The file ends with a note explaining that
+open and click data are approximate.
+
+### `GET /api/portal/reports/print?campaignId=…`
+A self-contained printable HTML report (no external stylesheet, so it prints
+correctly from the browser). Access is checked exactly like the JSON report.
+
+---
+
+## Client accounts — `/api/clients` (owner only)
+
+### `GET /api/clients`
+Lists the workspace's client accounts.
+
+### `POST /api/clients`
+Creates a client account. The email is globally unique so a client sign-in is
+unambiguous.
+
+```json
+{ "email": "client@example.com", "password": "at-least-10-chars", "name": "Acme Ltd", "company": "Acme Ltd" }
+```
+
+### `GET|PATCH|DELETE /api/clients/:id`
+Reads, updates or removes a client. A new password or a deactivation bumps
+`sessionVersion`, which invalidates every outstanding client session.
+
+### `GET|POST|DELETE /api/clients/:id/campaigns`
+Manages the campaign assignments.
+
+```json
+POST { "campaignId": "cm123" }
+DELETE /api/clients/:id/campaigns?campaignId=cm123
+```
+
+---
+
+## Client authentication
+
+### `POST /api/auth/client-login`
+```json
+{ "email": "client@example.com", "password": "at-least-10-chars" }
+```
+Sets the `eop_client_session` cookie. Rate-limited per IP and per account.
+The error message is identical for an unknown email, a wrong password and a
+deactivated account (no account enumeration).
+
+### `POST /api/auth/client-logout`
+Clears the client session.
+
+---
+
+## Tracking — `/api/track/*` (public)
+
+Both endpoints are called by mail clients, which are not logged in, so they are
+public. The token is signed, so nothing can be forged: a token for a
+recipient you do not own cannot be guessed, and a click token cannot be
+replayed as an open.
+
+### `GET /api/track/open?t=<token>`
+The 1x1 tracking pixel.
+
+- Always answers with a valid transparent GIF (a broken image in someone's
+  inbox is worse than a missed statistic), even for a rejected token.
+- `Cache-Control: no-store` — a cached pixel would not be counted at all.
+- Only records an event for a campaign that has `trackingEnabled` and a
+  recipient that really belongs to it.
+- The event is classified as HUMAN, PREVIEW or BOT.
+
+### `GET /api/track/click?t=<token>`
+The tracked link redirect.
+
+- Answers 302 to the target URL.
+- Only `http`/`https` targets are followed — `javascript:`, `data:` and
+  `file:` are rejected with 400 and nothing is recorded.
+- Only records an event for a campaign that has `clickTrackingEnabled`.
+
+### What is measured
+
+| Metric | Definition |
+|---|---|
+| sent | messages the provider ACCEPTED (job status SENT) |
+| delivered | messages the provider CONFIRMED as delivered — `null` when unknown |
+| uniqueOpens | distinct recipients whose pixel fired, excluding bots |
+| totalOpens | every pixel fetch, including repeats and automated ones |
+| openRate | uniqueOpens / delivered when delivery is known, else / sent |
+| uniqueClicks | distinct recipients who followed a tracked link |
+| replies | replies matched to this campaign |
+| bounced | permanent failures reported as a bounce by the provider |
+| unsubscribed | suppression rows created by an unsubscribe |
+
+The dedupe key is set only on the FIRST event of its kind, so repeated opens
+and clicks are still counted in the total but never inflate the unique count.

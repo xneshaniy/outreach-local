@@ -56,6 +56,9 @@ const campaignBody = z.object({
   endAt: z.coerce.date().nullish(),
   requiresApproval: z.boolean().default(false),
   dryRun: z.boolean().default(false),
+  // Opt-in tracking. Both default to OFF so nothing is tracked silently.
+  trackingEnabled: z.boolean().default(false),
+  clickTrackingEnabled: z.boolean().default(false),
 });
 
 export const campaignCreateSchema = campaignBody.superRefine((v, ctx) => {

@@ -98,6 +98,8 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
         ? { approvedAt: null, approvedBy: null }
         : {}),
       ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
+      ...(body.trackingEnabled !== undefined ? { trackingEnabled: body.trackingEnabled } : {}),
+      ...(body.clickTrackingEnabled !== undefined ? { clickTrackingEnabled: body.clickTrackingEnabled } : {}),
     },
   });
 

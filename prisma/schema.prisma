@@ -141,6 +141,17 @@ enum SendJobKind {
   FOLLOW_UP // a follow-up sequence step
 }
 
+enum TrackingEventType {
+  OPEN // the tracking pixel was fetched
+  CLICK // a tracked link was followed
+}
+
+enum TrackingSource {
+  HUMAN // a real mail client (best guess)
+  PREVIEW // Apple Mail Privacy Protection / browser previews
+  BOT // security scanners, link checkers, image proxies
+}
+
 // ---------------------------------------------------------------------------
 // Core models
 // ---------------------------------------------------------------------------
@@ -171,6 +182,7 @@ model User {
   followUpSequences FollowUpSequence[]
   followUpMessages  FollowUpMessage[]
   replies           Reply[]
+  clients           Client[]
 }
 
 model SenderAccount {
@@ -305,6 +317,7 @@ model Contact {
   unsubscribeEvents  UnsubscribeEvent[]
   followUpMessages   FollowUpMessage[]
   replies            Reply[]
+  trackingEvents     TrackingEvent[]
 
   // One contact per user per normalized email — enforced by the database.
   @@unique([userId, emailNormalized])
@@ -343,6 +356,12 @@ model Campaign {
   // contacting the provider. Used to validate configuration before going live.
   dryRun Boolean @default(false)
 
+  // --- Tracking (opt-in per campaign) -------------------------------------
+  // Open tracking adds a 1x1 tracking pixel to the message body.
+  trackingEnabled Boolean @default(false)
+  // Click tracking rewrites the links in the body to a redirecting tracker.
+  clickTrackingEnabled Boolean @default(false)
+
   // Optional follow-up sequence triggered after the first email is sent.
   followUpSequenceId String?
   followUpSequence   FollowUpSequence? @relation(fields: [followUpSequenceId], references: [id], onDelete: SetNull)
@@ -377,6 +396,8 @@ model Campaign {
   unsubscribeEvents UnsubscribeEvent[]
   followUpMessages FollowUpMessage[]
   replies          Reply[]
+  clientAccess     ClientCampaignAccess[]
+  trackingEvents   TrackingEvent[]
 
   @@index([userId, status])
   @@index([status])
@@ -454,6 +475,9 @@ model SendJob {
   idempotencyKey String @unique
   // Set when a provider call timed out after submission (outcome unknown).
   ambiguousSince DateTime?
+  // Set when the provider CONFIRMED delivery (e.g. a webhook). NULL means
+  // "not known" — it is never guessed.
+  deliveredAt DateTime?
   // Dry run: the message was rendered but never handed to a provider.
   dryRun Boolean @default(false)
 
@@ -754,5 +778,80 @@ model Reply {
   @@unique([userId, provider, messageId])
   @@index([userId, receivedAt])
   @@index([userId, isRead])
+  @@index([contactId])
+}
+
+// ---------------------------------------------------------------------------
+// Client portal
+//
+// A client is a separate login that can only see the campaigns an
+// administrator explicitly assigned to it. The client's own password hash is
+// stored here; it never shares the workspace owner's credentials.
+// ---------------------------------------------------------------------------
+
+model Client {
+  id           String   @id @default(cuid())
+  // The workspace that owns this client account.
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Login identity. Globally unique so a client sign-in is unambiguous.
+  email        String   @unique
+  passwordHash String
+  name         String
+  company      String?
+  isActive     Boolean  @default(true)
+  // Bumping this invalidates every outstanding client session.
+  sessionVersion Int    @default(0)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  campaignAccess ClientCampaignAccess[]
+
+  @@index([userId, isActive])
+}
+
+// Which campaigns a client may see. Explicit, never inferred.
+model ClientCampaignAccess {
+  id         String   @id @default(cuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  // A campaign is assigned to a client at most once.
+  @@unique([clientId, campaignId])
+  @@index([campaignId])
+}
+
+// ---------------------------------------------------------------------------
+// Tracking
+//
+// Open and click events. `dedupeKey` is set only on the FIRST event of its
+// kind (open per recipient, click per recipient+link), so unique counts are a
+// simple indexed count and repeated events are still recorded for the total.
+// ---------------------------------------------------------------------------
+
+model TrackingEvent {
+  id         String            @id @default(cuid())
+  campaignId String
+  campaign   Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId  String
+  contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  type       TrackingEventType
+  source     TrackingSource    @default(HUMAN)
+  // The original (untracked) URL for CLICK events.
+  url        String?
+  userAgent  String?
+  ipAddress  String?
+  // Set on the first event of its kind; NULL for repeats. NULLs are allowed
+  // many times in a Postgres unique index, so repeats are never rejected.
+  dedupeKey  String?           @unique
+  createdAt  DateTime          @default(now())
+
+  @@index([campaignId, type])
+  @@index([campaignId, contactId, type])
+  @@index([campaignId, createdAt])
   @@index([contactId])
 }
