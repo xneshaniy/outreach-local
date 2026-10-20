@@ -327,23 +327,32 @@ builds the Docker image.
 
 ## What is verified and what is not
 
-**Verified in this environment** (Windows, portable Node 22, no local Postgres):
+**Verified by running it** (Windows, portable Node 22, real PostgreSQL on Neon):
 
 - `npx tsc --noEmit` — clean.
 - `npx eslint .` — clean.
-- `npx vitest run tests/unit` — all unit tests pass.
+- `npx vitest run` — **102/102 tests pass** (71 unit + 31 integration against a
+  real PostgreSQL database).
+- `npx prisma migrate deploy` — applies the committed migration to a live
+  database.
+- `npx tsx prisma/seed.ts` — seeds the demo workspace.
 - `npx next build` — succeeds (all routes).
 - `npm run build:worker` — produces the worker bundle.
+- `npm run build:deploy` — produces a self-contained deployment bundle.
+- The built bundle was **started and exercised end to end**: login, session
+  cookie, `/api/auth/me`, `/api/campaigns`, `/api/jobs`, `/dashboard`,
+  `/api/health`, and the background worker all behaved correctly against the
+  live database.
 
-**Written but not executed here** (need a real PostgreSQL / Docker):
+**Not verified here** (needs credentials or Docker):
 
-- `prisma migrate deploy` and the seed script against a live database.
-- The entire `tests/integration/**` suite (it skips automatically when
-  `TEST_DATABASE_URL` is unset — which is why `npm run test` is green locally).
-- The end-to-end Gmail OAuth flow and any real send (no credentials, no network
-  egress to Google).
+- The end-to-end Gmail OAuth flow and any real send (no Google credentials, no
+  network egress to Google). The code is complete and the error paths are
+  handled; it has simply never talked to Google's servers.
+- The Docker image build (no Docker daemon in this environment). The Dockerfile
+  is exercised by CI on every push.
 
-These are exercised by CI (`.github/workflows/ci.yml`), which provisions
+These are also exercised by CI (`.github/workflows/ci.yml`), which provisions
 PostgreSQL. If you run them locally and something fails, it is a real bug — fix
 it rather than assuming the code is right.
 
