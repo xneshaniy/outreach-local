@@ -1,0 +1,102 @@
+# Docker Compose for the Email Outreach Platform.
+#
+#   docker compose up --build
+#
+# Services:
+#   db       — PostgreSQL 16, persistent volume.
+#   migrate  — one-shot `prisma migrate deploy` (runs before app/worker).
+#   app      — Next.js server on http://localhost:3000
+#   worker   — background sender process (same image, different command).
+#
+# Provide secrets via a `.env` file next to this compose file (see .env.example).
+# At minimum set AUTH_SECRET and ENCRYPTION_KEY; the compose defaults below are
+# local-development placeholders only.
+
+name: email-outreach-platform
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  APP_URL: ${APP_URL:-http://localhost:3000}
+  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-outreach}?schema=public
+  AUTH_SECRET: ${AUTH_SECRET:-dev-only-insecure-auth-secret-change-me!!}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-ZGV2LW9ubHktaW5zZWN1cmUtZW5jcnlwdGlvbi1rZXktMzJi}
+  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/api/google/callback}
+  SENDER_DAILY_CAP_DEFAULT: ${SENDER_DAILY_CAP_DEFAULT:-100}
+  SENDER_QUOTA_TIMEZONE: ${SENDER_QUOTA_TIMEZONE:-UTC}
+  MAX_SENDER_ACCOUNTS: ${MAX_SENDER_ACCOUNTS:-10}
+  MIN_DAYS_BETWEEN_CONTACTS: ${MIN_DAYS_BETWEEN_CONTACTS:-3}
+  WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
+  WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-20}
+  WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-120}
+  WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+  WORKER_BACKOFF_BASE_MS: ${WORKER_BACKOFF_BASE_MS:-5000}
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-outreach}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-outreach}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: email-outreach-platform:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    # Reuses the Prisma CLI copied into the runner image.
+    command: ["npx", "prisma", "migrate", "deploy"]
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: email-outreach-platform:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *app-environment
+    command: ["node", "server.js"]
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: email-outreach-platform:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *app-environment
+    # Compiled worker bundle produced by `npm run build:worker`.
+    command: ["node", "worker/index.cjs"]
+    restart: unless-stopped
+
+volumes:
+  db-data:

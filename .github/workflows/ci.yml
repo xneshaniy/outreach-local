@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI-only secrets. These are throwaway values; never reuse them in production.
+  AUTH_SECRET: ci-auth-secret-0123456789abcdefghijklmnopqrstuvwxyz
+  ENCRYPTION_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  static:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: outreach_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # App/migration connection (used by prisma generate + next build).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/outreach_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npx vitest run tests/unit
+
+      - name: Apply migrations to a real database
+        run: npx prisma migrate deploy
+
+      - name: Integration tests
+        env:
+          # Integration suite opts in via TEST_DATABASE_URL; it truncates tables.
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/outreach_test?schema=public
+        run: npx vitest run tests/integration
+
+      - name: Build (Next.js + worker bundle)
+        run: npm run build && npm run build:worker
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: email-outreach-platform:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,36 @@
+# Dependencies / build
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Env & secrets — never commit
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# Prisma
+prisma/*.db
+
+# Local data / uploads
+uploads/
+tmp/
+*.csv
+!tests/fixtures/*.csv
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

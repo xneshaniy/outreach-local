@@ -1,0 +1,540 @@
+import type { Prisma, SendAttempt } from "@prisma/client";
+import { prisma } from "../lib/db";
+import { env } from "../lib/env";
+import { logger } from "../lib/logger";
+import { audit } from "../lib/audit";
+import { checkSuppression, isTooFrequent } from "../lib/suppression";
+import {
+  QuotaExceededError,
+  quotaDayKey,
+  releaseSenderSlot,
+  reserveCampaignSlot,
+  reserveSenderSlot,
+  rollbackCampaignSlot,
+  settleSenderSlot,
+} from "../lib/quota";
+import { isWithinSendingWindow, nextSendingInstant, type SendingWindow } from "../lib/scheduling";
+import { unsubscribeUrl } from "../lib/template";
+import { gmailProvider } from "../lib/email/gmail";
+import { smtpProvider } from "../lib/email/smtp";
+import type { ClaimedJob } from "../lib/queue";
+import type { EmailProvider, SendInput } from "../lib/email/provider";
+
+/**
+ * Worker pipeline for a single claimed job (spec §8).
+ *
+ * Ordering matters for correctness:
+ *   eligibility -> suppression -> frequency -> local window -> attempt row
+ *   -> quota reservation (tx) -> provider submit -> settle (tx)
+ *
+ * Ambiguity rule: if the provider call may have been accepted (timeout after
+ * submit), the job becomes AMBIGUOUS and is NEVER auto-retried; it must be
+ * reconciled (Gmail rfc822msgid search) before any further attempt.
+ */
+
+export function providerFor(account: { provider: "GOOGLE" | "SMTP" }): EmailProvider {
+  return account.provider === "GOOGLE" ? gmailProvider : smtpProvider;
+}
+
+export function backoffDelayMs(attempts: number): number {
+  const base = env.workerBackoffBaseMs * Math.pow(2, Math.max(0, attempts - 1));
+  const capped = Math.min(base, 30 * 60 * 1000); // never longer than 30 min
+  const jitter = 0.5 + Math.random(); // 0.5x .. 1.5x
+  return Math.round(capped * jitter);
+}
+
+export async function processJob(job: ClaimedJob): Promise<void> {
+  const started = Date.now();
+
+  // ---------------------------------------------------------------------------
+  // 1. Campaign still active? (pause / emergency stop / cancel)
+  // ---------------------------------------------------------------------------
+  if (job.campaign.status === "CANCELLED" || job.campaign.status === "COMPLETED") {
+    await finalizeSkipped(job, "CAMPAIGN_CANCELLED");
+    return;
+  }
+  if (job.campaign.status !== "ACTIVE" || job.campaign.emergencyStopped) {
+    // Not an error — requeue cheaply without consuming an attempt.
+    await prisma.sendJob.update({
+      where: { id: job.id },
+      data: {
+        status: "QUEUED",
+        claimedBy: null,
+        leaseExpiresAt: null,
+        scheduledAt: new Date(Date.now() + 60_000), // re-check in a minute
+      },
+    });
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2. Recipient / contact eligibility
+  // ---------------------------------------------------------------------------
+  const recipient = job.campaignRecipient;
+  if (["SENT", "FAILED", "SKIPPED", "CANCELLED"].includes(recipient.status)) {
+    await finalizeSkipped(job, `RECIPIENT_${recipient.status}`);
+    return;
+  }
+  if (recipient.status === "HELD_TZ") {
+    await finalizeSkipped(job, "HELD_UNKNOWN_TIMEZONE");
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. Suppression + unsubscribe + contact status + frequency
+  // ---------------------------------------------------------------------------
+  if (job.contact.status !== "ACTIVE") {
+    await finalizeSkipped(job, `CONTACT_${job.contact.status}`);
+    return;
+  }
+  const suppression = await checkSuppression(job.userId, job.contact.emailNormalized, job.campaignId);
+  if (suppression.suppressed) {
+    await finalizeSkipped(job, suppression.reason ?? "SUPPRESSED", suppression.detail);
+    return;
+  }
+  const ownerSetting = await prisma.user.findUnique({
+    where: { id: job.userId },
+    select: { minDaysBetweenContacts: true },
+  });
+  const minDays = ownerSetting?.minDaysBetweenContacts ?? env.minDaysBetweenContacts;
+  if (await isTooFrequent(job.contact, minDays)) {
+    await finalizeSkipped(job, "FREQUENCY_LIMIT");
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 4. Recipient-local sending window
+  // ---------------------------------------------------------------------------
+  const window: SendingWindow = {
+    startMinute: job.campaign.windowStartMinute,
+    endMinute: job.campaign.windowEndMinute,
+    days: job.campaign.sendingDays,
+  };
+  const now = new Date();
+  const zone = job.contact.timeZone;
+  if (!zone) {
+    await finalizeSkipped(job, "UNKNOWN_TIMEZONE");
+    return;
+  }
+  if (!isWithinSendingWindow(now, zone, window)) {
+    const next = nextSendingInstant(now, zone, window);
+    if (!next) {
+      await prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: "HELD_TZ", skipReason: "NO_VALID_SEND_TIME" },
+      });
+      await releaseClaim(job.id);
+      return;
+    }
+    await prisma.$transaction([
+      prisma.sendJob.update({
+        where: { id: job.id },
+        data: { status: "QUEUED", claimedBy: null, leaseExpiresAt: null, scheduledAt: next },
+      }),
+      prisma.campaignRecipient.update({ where: { id: recipient.id }, data: { status: "SCHEDULED", scheduledAt: next } }),
+    ]);
+    logger.debug("Job rescheduled to recipient-local window", { jobId: job.id, next: next.toISOString() });
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. Attempt row (crash-safe ambiguity marker)
+  //    Created BEFORE the provider call; unfinished = possible in-flight send.
+  // ---------------------------------------------------------------------------
+  const attemptNumber = job.attempts + 1;
+  const idempotencyHeader = `v1:${job.id}:${attemptNumber}`;
+  let attempt: SendAttempt;
+  try {
+    attempt = await prisma.sendAttempt.create({
+      data: { jobId: job.id, attemptNumber, status: "AMBIGUOUS", idempotencyHeader },
+    });
+  } catch (err) {
+    if ((err as { code?: string })?.code === "P2002") {
+      // Attempt row already exists (crash-recovery replay) — abort without
+      // touching the provider to avoid double-sends; the reclaimer owns it.
+      logger.warn("Attempt row already existed; refusing to re-send", { jobId: job.id, attemptNumber });
+      return;
+    }
+    throw err;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6. Sender selection + transactional quota reservation
+  // ---------------------------------------------------------------------------
+  const quotaDay = quotaDayKey(now, env.senderQuotaTimezone);
+  const accounts = await prisma.senderAccount.findMany({
+    where: { userId: job.userId, status: "CONNECTED" },
+    orderBy: [{ lastUsedAt: "asc" }, { createdAt: "asc" }],
+    take: 10,
+  });
+  if (accounts.length === 0) {
+    await failAttempt(job, attempt.id, attemptNumber, "NO_SENDER", "No connected sender account.", "permanent", Date.now() - started);
+    return;
+  }
+
+  let reservedFor: (typeof accounts)[number] | null = null;
+  let lastQuotaError: Error | null = null;
+
+  for (const account of accounts) {
+    const cap = Math.min(account.dailyCap, env.senderDailyCapDefault);
+    try {
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        await reserveSenderSlot(tx, account.id, cap, quotaDay);
+        await reserveCampaignSlot(tx, job.campaignId, job.campaign.dailyLimit, quotaDay);
+        await tx.sendJob.update({
+          where: { id: job.id },
+          data: { senderAccountId: account.id, provider: account.provider === "GOOGLE" ? "GMAIL" : "SMTP" },
+        });
+        await tx.sendAttempt.update({ where: { id: attempt.id }, data: { senderAccountId: account.id } });
+      });
+      reservedFor = account;
+      break;
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        lastQuotaError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (!reservedFor) {
+    // Every sender is at its daily cap — requeue for the next quota day.
+    await releaseClaim(job.id, { scheduledAt: nextQuotaDay(quotaDay, env.senderQuotaTimezone) });
+    await prisma.sendAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        status: "TRANSIENT_FAILURE",
+        finishedAt: new Date(),
+        errorCode: "ALL_SENDERS_AT_CAP",
+        errorMessage: lastQuotaError?.message ?? "All sender accounts reached their daily cap.",
+      },
+    });
+    logger.info("Job deferred: all senders at cap", { jobId: job.id });
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. Render + submit
+  // ---------------------------------------------------------------------------
+  const token = unsubscribeUrl({ c: job.contact.id, u: job.userId, p: job.campaignId });
+  const sendInput: SendInput = {
+    jobId: job.id,
+    idempotencyHeader,
+    fromEmail: reservedFor.email,
+    fromName: job.campaign.fromName ?? reservedFor.displayName,
+    toEmail: job.contact.email,
+    toName: [job.contact.firstName, job.contact.lastName].filter(Boolean).join(" ") || null,
+    replyTo: job.campaign.replyTo,
+    subject: job.campaign.subject,
+    html: job.campaign.body,
+    text: job.campaign.body,
+    unsubscribeUrl: token,
+  };
+
+  // Render personalization (the stored body is the template source).
+  const { renderEmail } = await import("../lib/template");
+  const rendered = renderEmail({
+    subject: job.campaign.subject,
+    body: job.campaign.body,
+    contact: job.contact,
+    unsubscribeUrl: token,
+  });
+  sendInput.subject = rendered.subject;
+  sendInput.html = rendered.html;
+  sendInput.text = rendered.text;
+
+  const provider = providerFor(reservedFor);
+  let outcome;
+  try {
+    outcome = await provider.send(reservedFor, sendInput);
+  } catch (err) {
+    // A thrown error during submit is ambiguous by definition.
+    logger.error("Provider threw during send", { jobId: job.id, error: (err as Error).message });
+    await markAmbiguous(job, attempt.id, attemptNumber, "PROVIDER_THREW", (err as Error).message, quotaDay);
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8. Settle
+  // ---------------------------------------------------------------------------
+  if (outcome.kind === "ok") {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await settleSenderSlot(tx, reservedFor!.id, quotaDay);
+      await tx.sendAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "SUCCESS",
+          providerMessageId: outcome.messageId,
+          finishedAt: new Date(),
+          latencyMs: Date.now() - started,
+        },
+      });
+      await tx.sendJob.update({
+        where: { id: job.id },
+        data: { status: "SENT", providerMessageId: outcome.messageId, attempts: attemptNumber, lastError: null, ambiguousSince: null },
+      });
+      await tx.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: "SENT", sentAt: new Date(), lastError: null },
+      });
+      await tx.contact.update({
+        where: { id: job.contactId },
+        data: { lastSentAt: new Date(), sentCount: { increment: 1 } },
+      });
+    });
+    logger.info("Job sent", { jobId: job.id, provider: provider.name, attempt: attemptNumber });
+    return;
+  }
+
+  if (outcome.kind === "ambiguous") {
+    await markAmbiguous(job, attempt.id, attemptNumber, outcome.code, outcome.message, quotaDay);
+    return;
+  }
+
+  if (outcome.kind === "transient") {
+    const attempts = attemptNumber;
+    const exhausted = attempts >= job.maxAttempts;
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
+      await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+      await tx.sendAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "TRANSIENT_FAILURE",
+          errorCode: outcome.code,
+          errorMessage: outcome.message,
+          httpStatus: outcome.httpStatus,
+          finishedAt: new Date(),
+          latencyMs: Date.now() - started,
+        },
+      });
+      if (exhausted) {
+        await tx.sendJob.update({
+          where: { id: job.id },
+          data: { status: "FAILED", attempts, lastError: outcome.message, errorCode: outcome.code },
+        });
+        await tx.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
+        });
+      } else {
+        await tx.sendJob.update({
+          where: { id: job.id },
+          data: {
+            status: "QUEUED",
+            attempts,
+            lastError: outcome.message,
+            errorCode: outcome.code,
+            claimedBy: null,
+            leaseExpiresAt: null,
+            scheduledAt: new Date(Date.now() + backoffDelayMs(attempts)),
+          },
+        });
+      }
+    });
+    logger.warn("Transient send failure", { jobId: job.id, code: outcome.code, exhausted });
+    return;
+  }
+
+  // permanent
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await releaseSenderSlot(tx, reservedFor!.id, quotaDay, true);
+    await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+    await tx.sendAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        status: "PERMANENT_FAILURE",
+        errorCode: outcome.code,
+        errorMessage: outcome.message,
+        httpStatus: outcome.httpStatus,
+        finishedAt: new Date(),
+        latencyMs: Date.now() - started,
+      },
+    });
+    await tx.sendJob.update({
+      where: { id: job.id },
+      data: { status: "FAILED", attempts: attemptNumber, lastError: outcome.message, errorCode: outcome.code },
+    });
+    await tx.campaignRecipient.update({
+      where: { id: recipient.id },
+      data: { status: "FAILED", failedAt: new Date(), lastError: outcome.message },
+    });
+  });
+  logger.warn("Permanent send failure", { jobId: job.id, code: outcome.code });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function releaseClaim(jobId: string, extra?: { scheduledAt: Date }): Promise<void> {
+  await prisma.sendJob.update({
+    where: { id: jobId },
+    data: {
+      status: "QUEUED",
+      claimedBy: null,
+      leaseExpiresAt: null,
+      ...(extra?.scheduledAt ? { scheduledAt: extra.scheduledAt } : {}),
+    },
+  });
+}
+
+async function finalizeSkipped(job: ClaimedJob, reason: string, detail?: string): Promise<void> {
+  await prisma.$transaction([
+    prisma.sendJob.update({
+      where: { id: job.id },
+      data: { status: "SKIPPED", lastError: detail ? `${reason}: ${detail}` : reason, claimedBy: null, leaseExpiresAt: null },
+    }),
+    prisma.campaignRecipient.updateMany({
+      where: { campaignId: job.campaignId, contactId: job.contactId, status: { notIn: ["SENT"] } },
+      data: { status: "SKIPPED", skippedAt: new Date(), skipReason: reason },
+    }),
+  ]);
+}
+
+async function markAmbiguous(
+  job: ClaimedJob,
+  attemptId: string,
+  attemptNumber: number,
+  code: string | undefined,
+  message: string,
+  quotaDay: Date,
+): Promise<void> {
+  void quotaDay;
+  // Quota reservations are HELD while ambiguous: the message may exist at the
+  // provider, so releasing the slot could exceed the daily cap.
+  await prisma.$transaction([
+    prisma.sendAttempt.update({
+      where: { id: attemptId },
+      data: { status: "AMBIGUOUS", errorCode: code, errorMessage: message, finishedAt: new Date() },
+    }),
+    prisma.sendJob.update({
+      where: { id: job.id },
+      data: { status: "AMBIGUOUS", attempts: attemptNumber, ambiguousSince: new Date(), lastError: message, errorCode: code },
+    }),
+    prisma.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "SENDING", lastError: message } }),
+  ]);
+  logger.warn("Job marked AMBIGUOUS — reconciliation required", { jobId: job.id, code });
+}
+
+async function failAttempt(
+  job: ClaimedJob,
+  attemptId: string,
+  attemptNumber: number,
+  code: string,
+  message: string,
+  kind: "permanent" | "transient",
+  latencyMs: number,
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.sendAttempt.update({
+      where: { id: attemptId },
+      data: {
+        status: kind === "permanent" ? "PERMANENT_FAILURE" : "TRANSIENT_FAILURE",
+        errorCode: code,
+        errorMessage: message,
+        finishedAt: new Date(),
+        latencyMs,
+      },
+    }),
+    prisma.sendJob.update({
+      where: { id: job.id },
+      data: { status: "FAILED", attempts: attemptNumber, lastError: message, errorCode: code },
+    }),
+    prisma.campaignRecipient.update({
+      where: { id: job.campaignRecipientId },
+      data: { status: "FAILED", failedAt: new Date(), lastError: message },
+    }),
+  ]);
+}
+
+function nextQuotaDay(quotaDay: Date, tz: string): Date {
+  // Next quota day starts at local midnight of tz; approximate with +26h then
+  // snap to the quota-day key boundary.
+  const next = new Date(quotaDay.getTime() + 26 * 3600 * 1000);
+  return quotaDayKey(next, tz);
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation of AMBIGUOUS jobs
+// ---------------------------------------------------------------------------
+
+export async function reconcileAmbiguousJob(job: ClaimedJob): Promise<"sent" | "requeued" | "manual"> {
+  if (!job.senderAccount) return "manual";
+  const latestAttempt = await prisma.sendAttempt.findFirst({
+    where: { jobId: job.id },
+    orderBy: { attemptNumber: "desc" },
+  });
+
+  const provider = providerFor(job.senderAccount);
+  const token = unsubscribeUrl({ c: job.contact.id, u: job.userId, p: job.campaignId });
+  const input: SendInput = {
+    jobId: job.id,
+    idempotencyHeader: latestAttempt?.idempotencyHeader ?? `v1:${job.id}:${job.attempts}`,
+    fromEmail: job.senderAccount.email,
+    fromName: job.campaign.fromName,
+    toEmail: job.contact.email,
+    subject: job.campaign.subject,
+    html: job.campaign.body,
+    text: job.campaign.body,
+    unsubscribeUrl: token,
+  };
+
+  const result = await provider.reconcile(job.senderAccount, input);
+  const quotaDay = quotaDayKey(new Date(), env.senderQuotaTimezone);
+
+  if (result === "sent") {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await settleSenderSlot(tx, job.senderAccount!.id, quotaDay);
+      if (latestAttempt) {
+        await tx.sendAttempt.update({
+          where: { id: latestAttempt.id },
+          data: { status: "SUCCESS", reconciliationNote: "confirmed sent via provider reconciliation", finishedAt: new Date() },
+        });
+      }
+      await tx.sendJob.update({
+        where: { id: job.id },
+        data: { status: "SENT", lastError: null, ambiguousSince: null },
+      });
+      await tx.campaignRecipient.update({
+        where: { id: job.campaignRecipientId },
+        data: { status: "SENT", sentAt: new Date(), lastError: null },
+      });
+      await tx.contact.update({
+        where: { id: job.contactId },
+        data: { lastSentAt: new Date(), sentCount: { increment: 1 } },
+      });
+    });
+    await audit(prisma, { userId: job.userId, action: "job.reconciled_sent", entityType: "SendJob", entityId: job.id });
+    return "sent";
+  }
+
+  if (result === "not_sent") {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await releaseSenderSlot(tx, job.senderAccount!.id, quotaDay);
+      await rollbackCampaignSlot(tx, job.campaignId, quotaDay);
+      if (latestAttempt) {
+        await tx.sendAttempt.update({
+          where: { id: latestAttempt.id },
+          data: { status: "TRANSIENT_FAILURE", reconciliationNote: "confirmed NOT sent; requeued", finishedAt: new Date() },
+        });
+      }
+      const exhausted = job.attempts >= job.maxAttempts;
+      if (exhausted) {
+        await tx.sendJob.update({ where: { id: job.id }, data: { status: "FAILED", ambiguousSince: null, lastError: "Reconciled as not sent; attempts exhausted." } });
+        await tx.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "FAILED", failedAt: new Date() } });
+      } else {
+        await tx.sendJob.update({
+          where: { id: job.id },
+          data: { status: "QUEUED", ambiguousSince: null, scheduledAt: new Date(Date.now() + backoffDelayMs(job.attempts)) },
+        });
+        await tx.campaignRecipient.update({ where: { id: job.campaignRecipientId }, data: { status: "QUEUED" } });
+      }
+    });
+    return "requeued";
+  }
+
+  // unknown — leave AMBIGUOUS for manual review; NEVER blind-retry.
+  return "manual";
+}

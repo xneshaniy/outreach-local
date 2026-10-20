@@ -1,0 +1,537 @@
+// Email Outreach Platform — Prisma schema (PostgreSQL).
+// Design notes:
+//  - Duplicate prevention is DATABASE-ENFORCED:
+//      * Contact:            @@unique([userId, emailNormalized])
+//      * CampaignRecipient:  @@unique([campaignId, contactId])  (one contact per campaign, ever)
+//      * SendJob:            @unique(campaignRecipientId) + @unique(idempotencyKey)
+//      * SendAttempt:        @@unique([jobId, attemptNumber])
+//  - Provider tokens are stored ENCRYPTED (AES-256-GCM) in *Enc columns; never exposed to the client.
+//  - Atomic claiming uses SELECT ... FOR UPDATE SKIP LOCKED + leases (see src/lib/queue.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Uncomment for pooled setups (Neon/Supabase) that require an unpooled migration URL:
+  // directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum SenderProvider {
+  GOOGLE
+  SMTP
+}
+
+enum SenderStatus {
+  CONNECTED
+  PAUSED
+  DISCONNECTED
+  ERROR
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum RecipientStatus {
+  PENDING // added, not yet scheduled
+  HELD_TZ // invalid/unknown time zone, held for review
+  SCHEDULED // scheduledAt computed, waiting for due time
+  QUEUED // job enqueued and due-window reached
+  SENDING // job claimed by a worker
+  SENT
+  FAILED
+  SKIPPED
+  CANCELLED
+}
+
+enum JobStatus {
+  QUEUED
+  CLAIMED
+  SENT
+  FAILED
+  SKIPPED
+  CANCELLED
+  AMBIGUOUS // provider outcome unknown (e.g. timeout after submit) — must be reconciled
+}
+
+enum AttemptStatus {
+  SUCCESS
+  TRANSIENT_FAILURE
+  PERMANENT_FAILURE
+  AMBIGUOUS
+}
+
+enum ProviderKind {
+  GMAIL
+  SMTP
+}
+
+enum ContactStatus {
+  ACTIVE
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINED
+  INVALID
+}
+
+enum SuppressionScope {
+  GLOBAL
+  CAMPAIGN
+}
+
+enum SuppressionReason {
+  UNSUBSCRIBE
+  BOUNCE
+  HARD_BOUNCE
+  COMPLAINT
+  MANUAL
+  LIST_UNSUBSCRIBE
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum TzFallbackMode {
+  HOLD // hold recipients with unknown/invalid tz for review (default, safest)
+  FALLBACK // schedule using fallbackTimeZone
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  INVALID_SIGNATURE
+}
+
+// ---------------------------------------------------------------------------
+// Core models
+// ---------------------------------------------------------------------------
+
+model User {
+  id                    String   @id @default(cuid())
+  email                 String   @unique
+  passwordHash          String
+  name                  String?
+  role                  Role     @default(OWNER)
+  // Bumping this invalidates every outstanding session token.
+  sessionVersion        Int      @default(0)
+  minDaysBetweenContacts Int     @default(3)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  senderAccounts   SenderAccount[]
+  contacts         Contact[]
+  campaigns        Campaign[]
+  templates        EmailTemplate[]
+  importBatches    ImportBatch[]
+  suppressions     Suppression[]
+  auditLogs        AuditLog[]
+  webhookEvents    WebhookEvent[]
+  unsubscribeEvents UnsubscribeEvent[]
+  idempotencyKeys  IdempotencyKey[]
+}
+
+model SenderAccount {
+  id          String         @id @default(cuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider    SenderProvider
+  email       String
+  displayName String?
+  status      SenderStatus   @default(CONNECTED)
+  // Application-level daily cap. The effective cap is MIN(configured cap, provider limit).
+  dailyCap    Int            @default(100)
+
+  // --- SMTP (encrypted at rest) ---
+  smtpHost             String?
+  smtpPort             Int?
+  smtpSecure           Boolean  @default(false)
+  smtpUsername         String?
+  smtpPasswordEnc      String?
+
+  // --- Google OAuth (encrypted at rest; never returned by any API) ---
+  googleSubject    String?
+  accessTokenEnc   String?
+  refreshTokenEnc  String?
+  scopes           String[]  @default([])
+  tokenExpiresAt   DateTime?
+
+  lastError      String?
+  lastUsedAt     DateTime?
+  connectedAt    DateTime?
+  disconnectedAt DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  dailyUsage  SenderDailyUsage[]
+  sendJobs    SendJob[]
+  sendAttempts SendAttempt[]
+
+  @@unique([userId, email])
+  @@index([userId, status])
+}
+
+model EmailTemplate {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  subject     String
+  body        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns Campaign[]
+}
+
+model Contact {
+  id              String        @id @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email           String
+  // Canonical form used for dedupe + suppression checks (lowercased, trimmed).
+  emailNormalized String
+  firstName       String?
+  lastName        String?
+  company         String?
+  website         String?
+  title           String?
+  // IANA time zone, e.g. "Asia/Karachi". Null = unknown.
+  timeZone        String?
+  country         String?
+  customFields    Json?
+  status          ContactStatus @default(ACTIVE)
+  // Lawful basis / consent tracking.
+  consentAt      DateTime?
+  consentSource  String?
+  lastSentAt     DateTime?
+  sentCount      Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  campaignRecipients CampaignRecipient[]
+  sendJobs           SendJob[]
+  unsubscribeEvents  UnsubscribeEvent[]
+
+  // One contact per user per normalized email — enforced by the database.
+  @@unique([userId, emailNormalized])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+}
+
+model Campaign {
+  id       String         @id @default(cuid())
+  userId   String
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name     String
+  subject  String
+  templateId String?
+  template EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  // Snapshot of the message body at campaign level (auditable even if the template changes).
+  body     String
+
+  status          CampaignStatus @default(DRAFT)
+  // Emergency stop: worker refuses to send for this campaign until resumed.
+  emergencyStopped Boolean       @default(false)
+
+  // Recipient-local sending window (minutes from local midnight). Default 09:00–17:00.
+  windowStartMinute Int @default(540)
+  windowEndMinute   Int @default(1020)
+  // 0=Sunday .. 6=Saturday. Default Mon–Fri.
+  sendingDays Int[] @default([1, 2, 3, 4, 5])
+
+  // Recipients with unknown/invalid time zones are HELD unless FALLBACK is configured.
+  timeZoneFallback TzFallbackMode @default(HOLD)
+  fallbackTimeZone String?
+
+  // Optional campaign-wide daily sending limit (in addition to per-sender caps).
+  dailyLimit Int?
+
+  fromName String?
+  replyTo  String?
+
+  startAt DateTime?
+  endAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recipients     CampaignRecipient[]
+  sendJobs       SendJob[]
+  dailyUsage     CampaignDailyUsage[]
+  suppressions   Suppression[]
+  importBatches  ImportBatch[]
+  unsubscribeEvents UnsubscribeEvent[]
+
+  @@index([userId, status])
+  @@index([status])
+}
+
+model CampaignRecipient {
+  id         String          @id @default(cuid())
+  campaignId String
+  campaign   Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId  String
+  contact    Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  status      RecipientStatus @default(PENDING)
+  // UTC instant derived from the recipient's local sending window.
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  failedAt    DateTime?
+  skippedAt   DateTime?
+  skipReason  String?
+  lastError   String?
+  importBatchId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sendJob SendJob?
+
+  // *** CRITICAL: a contact can belong to a campaign exactly once. ***
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([campaignId, scheduledAt])
+  @@index([status, scheduledAt])
+}
+
+model SendJob {
+  id                   String            @id @default(cuid())
+  campaignRecipientId  String            @unique
+  campaignRecipient    CampaignRecipient @relation(fields: [campaignRecipientId], references: [id], onDelete: Cascade)
+  campaignId           String
+  campaign             Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId            String
+  contact              Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  userId               String
+
+  status     JobStatus     @default(QUEUED)
+  // When the job may be claimed (respects recipient-local window; reused for retry backoff).
+  scheduledAt DateTime
+  claimedAt      DateTime?
+  claimedBy      String?
+  leaseExpiresAt DateTime?
+
+  attempts   Int @default(0)
+  maxAttempts Int @default(5)
+
+  lastError String?
+  errorCode String?
+
+  provider         ProviderKind?
+  senderAccountId  String?
+  senderAccount    SenderAccount? @relation(fields: [senderAccountId], references: [id], onDelete: SetNull)
+  providerMessageId String?
+
+  // Deterministic idempotency key: "job:<campaignRecipientId>".
+  // Retried API requests / duplicate enqueues can never create a second job.
+  idempotencyKey String @unique
+  // Set when a provider call timed out after submission (outcome unknown).
+  ambiguousSince DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sendAttempts SendAttempt[]
+
+  // Atomic claiming scans this index: due + queued jobs.
+  @@index([status, scheduledAt])
+  @@index([campaignId, status])
+  @@index([userId, status])
+}
+
+model SendAttempt {
+  id      String      @id @default(cuid())
+  jobId   String
+  job     SendJob     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  senderAccountId String?
+  senderAccount   SenderAccount? @relation(fields: [senderAccountId], references: [id], onDelete: SetNull)
+
+  status             AttemptStatus
+  providerMessageId  String?
+  errorCode          String?
+  errorMessage       String?
+  httpStatus         Int?
+  // Value sent as X-EOP-Idempotency-Key / Message-ID hint for reconciliation.
+  idempotencyHeader  String?
+  latencyMs          Int?
+  startedAt          DateTime @default(now())
+  finishedAt         DateTime?
+  reconciliationNote String?
+
+  // One row per (job, attempt) — prevents double accounting for the same attempt.
+  @@unique([jobId, attemptNumber])
+  @@index([status, startedAt])
+}
+
+model SenderDailyUsage {
+  id             String        @id @default(cuid())
+  senderAccountId String
+  senderAccount  SenderAccount @relation(fields: [senderAccountId], references: [id], onDelete: Cascade)
+  // UTC midnight of the quota day (reset timezone configurable via SENDER_QUOTA_TIMEZONE).
+  date         DateTime
+  sentCount    Int @default(0)
+  // Slots reserved by in-flight jobs; released on terminal failure.
+  reservedCount Int @default(0)
+  failureCount  Int @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([senderAccountId, date])
+  @@index([date])
+}
+
+model CampaignDailyUsage {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  date       DateTime
+  sentCount  Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([campaignId, date])
+  @@index([date])
+}
+
+model Suppression {
+  id              String            @id @default(cuid())
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scope           SuppressionScope  @default(GLOBAL)
+  campaignId      String?
+  campaign        Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  emailNormalized String
+  reason          SuppressionReason
+  source          String?
+  createdAt       DateTime          @default(now())
+
+  // Partial unique indexes (global / per-campaign) are created in the SQL migration.
+  @@index([userId, scope, emailNormalized])
+  @@index([campaignId, emailNormalized])
+}
+
+model UnsubscribeEvent {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignId      String?
+  campaign        Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contactId       String?
+  contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  emailNormalized String
+  // SHA-256 of the token that was used (token itself is stateless HMAC, never stored raw).
+  tokenHash       String
+  reason          String?
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([emailNormalized, createdAt])
+}
+
+model WebhookEvent {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider    String // "gmail" | "smtp"
+  // Provider event id — unique per provider, guarantees webhook idempotency.
+  externalId  String
+  eventType   String // BOUNCE | COMPLAINT | DELIVERY | ...
+  status      WebhookStatus @default(RECEIVED)
+  payload     Json?
+  processedAt DateTime?
+  errorMessage String?
+  createdAt   DateTime      @default(now())
+
+  @@unique([provider, externalId])
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String // e.g. "campaign.pause", "sender.disconnect"
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}
+
+model ImportBatch {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignId    String?
+  campaign      Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  filename      String
+  status        ImportStatus @default(PENDING)
+  totalRows     Int          @default(0)
+  importedRows  Int          @default(0)
+  // Rows skipped because the (campaign, contact) pair already existed.
+  duplicateRows Int          @default(0)
+  invalidRows   Int          @default(0)
+  error         String?
+  createdAt     DateTime     @default(now())
+  completedAt   DateTime?
+
+  @@index([userId, createdAt])
+}
+
+// Fixed-window rate limiting (shared across instances via Postgres).
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([key, windowStart])
+  @@index([windowStart])
+}
+
+// Replay protection for mutating API requests that carry an Idempotency-Key header.
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key          String
+  endpoint     String
+  // Hash of the request body, used to reject key reuse with a different payload.
+  requestHash  String?
+  responseStatus Int?
+  responseBody Json?
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, key])
+  @@index([createdAt])
+}
