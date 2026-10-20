@@ -16,6 +16,8 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-c
   && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
+# Prisma's postinstall runs `prisma generate`; give it a placeholder URL.
+ENV DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public"
 RUN npm ci
 
 FROM node:22-bookworm-slim AS builder
@@ -24,8 +26,14 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-c
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# `next build` requires the datasource URL to exist; the value is not used at build time.
-ENV NEXT_TELEMETRY_DISABLED=1
+# `next build` evaluates the app's route modules, and src/lib/env.ts refuses to
+# start in production without AUTH_SECRET / ENCRYPTION_KEY. These are
+# build-time placeholders only - the real values are injected at RUNTIME.
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public" \
+    AUTH_SECRET="build-time-placeholder-secret-not-used-at-runtime-000" \
+    ENCRYPTION_KEY="MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" \
+    APP_URL="http://localhost:3000"
 RUN npx prisma generate && npm run build && npm run build:worker
 
 # ---------------------------------------------------------------------------
@@ -50,6 +58,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modul
 # The Prisma CLI package (contains `prisma` CLI + engine binaries) so that
 # `npx prisma migrate deploy` works inside the image.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
+# The CLI shim in .bin, so `npx prisma` resolves to the local package instead
+# of downloading one at runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 COPY --from=builder --chown=nextjs:nodejs /app/dist/worker ./worker
 USER nextjs
 EXPOSE 3000
