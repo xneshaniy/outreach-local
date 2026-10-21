@@ -109,6 +109,10 @@ So any of these entry points work:
 | `deploy/start.js` | `node deploy/start.js` |
 | `server/server.js` | `node server/server.js` (web app only) |
 
+The launcher takes the port from `PORT` in the environment, and also accepts
+`-p <port>` on the command line — so a panel that runs
+`npm run start -- -p $PORT` works as well as one that sets `PORT`.
+
 **If the log says `Cannot find module .../deploy/deploy/start.js`**
 
 That means the platform ran the command with the working directory already

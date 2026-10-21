@@ -61,6 +61,27 @@ const ROOT = findBundleRoot();
 const WORKER_ENTRY = path.join(ROOT, "worker", "index.cjs");
 const SERVER_ENTRY = path.join(ROOT, "server", "server.js");
 
+/**
+ * The port to listen on.
+ *
+ * A hosting platform may pass the port as an argument instead of an
+ * environment variable - the Next.js preset runs "npm run start -- -p $PORT".
+ * The environment wins, because that is what the platform sets.
+ */
+function resolvePort(argv) {
+  if (process.env.PORT) return process.env.PORT;
+  const index = argv.findIndex((a) => a === "-p" || a === "--port");
+  if (index >= 0 && argv[index + 1]) return argv[index + 1];
+  const inline = argv.find((a) => /^--port=/.test(a));
+  if (inline) return inline.split("=")[1];
+  return "3000";
+}
+
+if (!process.env.PORT) {
+  process.env.PORT = resolvePort(process.argv.slice(2));
+  log(`no PORT in the environment - using ${process.env.PORT} from the command line`);
+}
+
 let worker = null;
 
 if (process.env.RUN_WORKER !== "false") {

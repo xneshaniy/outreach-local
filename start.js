@@ -20,6 +20,28 @@ const { spawn } = require("node:child_process");
 const ROOT = __dirname;
 const log = (...args) => console.log("[start]", ...args);
 
+/**
+ * The port to listen on.
+ *
+ * A hosting platform may pass the port as an argument instead of an
+ * environment variable - the Next.js preset runs "npm run start -- -p $PORT".
+ * The environment wins, because that is what the platform sets.
+ */
+function resolvePort(argv) {
+  if (process.env.PORT) return process.env.PORT;
+  const index = argv.findIndex((a) => a === "-p" || a === "--port");
+  if (index >= 0 && argv[index + 1]) return argv[index + 1];
+  const inline = argv.find((a) => /^--port=/.test(a));
+  if (inline) return inline.split("=")[1];
+  return "3000";
+}
+
+const PORT = resolvePort(process.argv.slice(2));
+if (!process.env.PORT) {
+  process.env.PORT = PORT;
+  log(`no PORT in the environment - using ${PORT} from the command line`);
+}
+
 /* -------------------------------------------------------------------------- */
 /* The deployment bundle: it already starts the worker itself.                  */
 /* -------------------------------------------------------------------------- */
@@ -49,7 +71,15 @@ if (fs.existsSync(bundleLauncher)) {
 
   if (process.env.RUN_WORKER !== "false" && fs.existsSync(workerEntry)) {
     log("starting the sender worker...");
-    worker = spawn(process.execPath, [workerEntry], { stdio: "inherit", env: process.env });
+    // The standalone server changes the working directory to its own folder
+    // when it is required, so the worker is given the repository root
+    // explicitly - otherwise it would look for .env and other files in the
+    // wrong place.
+    worker = spawn(process.execPath, [workerEntry], {
+      stdio: "inherit",
+      env: process.env,
+      cwd: ROOT,
+    });
     worker.on("error", (err) => log("worker failed to start:", err.message));
     worker.on("exit", (code, signal) => {
       if (shuttingDown) return;
