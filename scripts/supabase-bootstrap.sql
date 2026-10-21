@@ -5,9 +5,21 @@
 -- Run this ONCE in the Supabase SQL Editor:
 --   Supabase -> your project -> SQL Editor -> New query -> paste -> Run
 --
+--
+--  ***  THIS SCRIPT REBUILDS THE public SCHEMA.  ***
+--
+--  It drops everything in the public schema and recreates it from the
+--  committed migrations. That is what makes it reliable, and safe to run
+--  more than once: the result is always exactly the schema that
+--  'prisma migrate deploy' produces.
+--
+--  If the database already holds data you want to keep, do NOT run this.
+--  Use 'npx prisma migrate deploy' instead - it never drops anything.
+--
+--
 -- It creates the whole schema and records the migrations, so a later
---   npx prisma migrate deploy
--- reports "no pending migrations to apply" instead of applying them twice.
+-- 'npx prisma migrate deploy' reports "no pending migrations to apply"
+-- instead of trying to apply them a second time.
 --
 -- Generated from prisma/migrations (6 migrations).
 -- Do not edit by hand - regenerate with:
@@ -15,6 +27,27 @@
 -- =============================================================================
 
 BEGIN;
+
+-- --------------------------------------------------------------------------
+-- Start from a clean schema, then replay the migrations exactly as they
+-- were written. The result is the schema that 'prisma migrate deploy'
+-- produces, including the two partial unique indexes that MySQL cannot
+-- express.
+-- --------------------------------------------------------------------------
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
+-- Restore the grants for whichever of these roles exist. Supabase has
+-- postgres, anon and authenticated; another provider may not.
+DO $grants$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT rolname FROM pg_roles
+             WHERE rolname IN ('postgres', 'anon', 'authenticated')
+  LOOP
+    EXECUTE format('GRANT ALL ON SCHEMA public TO %I', r.rolname);
+  END LOOP;
+END
+$grants$;
 
 -- Prisma's migration bookkeeping.
 CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
@@ -32,7 +65,6 @@ CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
 -- =============================================================================
 -- migration: 20260101000000_init
 -- =============================================================================
--- CreateEnum
 CREATE TYPE "Role" AS ENUM ('OWNER', 'ADMIN', 'MEMBER');
 CREATE TYPE "SenderProvider" AS ENUM ('GOOGLE', 'SMTP');
 CREATE TYPE "SenderStatus" AS ENUM ('CONNECTED', 'PAUSED', 'DISCONNECTED', 'ERROR');
@@ -47,8 +79,6 @@ CREATE TYPE "SuppressionReason" AS ENUM ('UNSUBSCRIBE', 'BOUNCE', 'HARD_BOUNCE',
 CREATE TYPE "ImportStatus" AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED');
 CREATE TYPE "TzFallbackMode" AS ENUM ('HOLD', 'FALLBACK');
 CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'PROCESSED', 'IGNORED', 'INVALID_SIGNATURE');
-
--- CreateTable: User
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
@@ -62,8 +92,6 @@ CREATE TABLE "User" (
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
-
--- CreateTable: SenderAccount
 CREATE TABLE "SenderAccount" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -93,8 +121,6 @@ CREATE TABLE "SenderAccount" (
 );
 CREATE UNIQUE INDEX "SenderAccount_userId_email_key" ON "SenderAccount"("userId", "email");
 CREATE INDEX "SenderAccount_userId_status_idx" ON "SenderAccount"("userId", "status");
-
--- CreateTable: EmailTemplate
 CREATE TABLE "EmailTemplate" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -107,8 +133,6 @@ CREATE TABLE "EmailTemplate" (
     CONSTRAINT "EmailTemplate_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "EmailTemplate_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-
--- CreateTable: Contact
 CREATE TABLE "Contact" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -132,12 +156,9 @@ CREATE TABLE "Contact" (
     CONSTRAINT "Contact_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "Contact_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
--- One contact per user per normalized email (duplicate prevention, layer 1).
 CREATE UNIQUE INDEX "Contact_userId_emailNormalized_key" ON "Contact"("userId", "emailNormalized");
 CREATE INDEX "Contact_userId_status_idx" ON "Contact"("userId", "status");
 CREATE INDEX "Contact_userId_createdAt_idx" ON "Contact"("userId", "createdAt");
-
--- CreateTable: Campaign
 CREATE TABLE "Campaign" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -165,8 +186,6 @@ CREATE TABLE "Campaign" (
 );
 CREATE INDEX "Campaign_userId_status_idx" ON "Campaign"("userId", "status");
 CREATE INDEX "Campaign_status_idx" ON "Campaign"("status");
-
--- CreateTable: CampaignRecipient
 CREATE TABLE "CampaignRecipient" (
     "id" TEXT NOT NULL,
     "campaignId" TEXT NOT NULL,
@@ -185,13 +204,10 @@ CREATE TABLE "CampaignRecipient" (
     CONSTRAINT "CampaignRecipient_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "CampaignRecipient_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
--- *** CRITICAL duplicate prevention: one contact per campaign, ever. ***
 CREATE UNIQUE INDEX "CampaignRecipient_campaignId_contactId_key" ON "CampaignRecipient"("campaignId", "contactId");
 CREATE INDEX "CampaignRecipient_campaignId_status_idx" ON "CampaignRecipient"("campaignId", "status");
 CREATE INDEX "CampaignRecipient_campaignId_scheduledAt_idx" ON "CampaignRecipient"("campaignId", "scheduledAt");
 CREATE INDEX "CampaignRecipient_status_scheduledAt_idx" ON "CampaignRecipient"("status", "scheduledAt");
-
--- CreateTable: SendJob
 CREATE TABLE "SendJob" (
     "id" TEXT NOT NULL,
     "campaignRecipientId" TEXT NOT NULL,
@@ -220,15 +236,11 @@ CREATE TABLE "SendJob" (
     CONSTRAINT "SendJob_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "SendJob_senderAccountId_fkey" FOREIGN KEY ("senderAccountId") REFERENCES "SenderAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
--- One logical job per campaign recipient + idempotent enqueues.
 CREATE UNIQUE INDEX "SendJob_campaignRecipientId_key" ON "SendJob"("campaignRecipientId");
 CREATE UNIQUE INDEX "SendJob_idempotencyKey_key" ON "SendJob"("idempotencyKey");
--- Atomic claim scan index.
 CREATE INDEX "SendJob_status_scheduledAt_idx" ON "SendJob"("status", "scheduledAt");
 CREATE INDEX "SendJob_campaignId_status_idx" ON "SendJob"("campaignId", "status");
 CREATE INDEX "SendJob_userId_status_idx" ON "SendJob"("userId", "status");
-
--- CreateTable: SendAttempt
 CREATE TABLE "SendAttempt" (
     "id" TEXT NOT NULL,
     "jobId" TEXT NOT NULL,
@@ -248,11 +260,8 @@ CREATE TABLE "SendAttempt" (
     CONSTRAINT "SendAttempt_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "SendJob"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "SendAttempt_senderAccountId_fkey" FOREIGN KEY ("senderAccountId") REFERENCES "SenderAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
--- No double-accounting of the same attempt.
 CREATE UNIQUE INDEX "SendAttempt_jobId_attemptNumber_key" ON "SendAttempt"("jobId", "attemptNumber");
 CREATE INDEX "SendAttempt_status_startedAt_idx" ON "SendAttempt"("status", "startedAt");
-
--- CreateTable: SenderDailyUsage
 CREATE TABLE "SenderDailyUsage" (
     "id" TEXT NOT NULL,
     "senderAccountId" TEXT NOT NULL,
@@ -266,8 +275,6 @@ CREATE TABLE "SenderDailyUsage" (
 );
 CREATE UNIQUE INDEX "SenderDailyUsage_senderAccountId_date_key" ON "SenderDailyUsage"("senderAccountId", "date");
 CREATE INDEX "SenderDailyUsage_date_idx" ON "SenderDailyUsage"("date");
-
--- CreateTable: CampaignDailyUsage
 CREATE TABLE "CampaignDailyUsage" (
     "id" TEXT NOT NULL,
     "campaignId" TEXT NOT NULL,
@@ -279,8 +286,6 @@ CREATE TABLE "CampaignDailyUsage" (
 );
 CREATE UNIQUE INDEX "CampaignDailyUsage_campaignId_date_key" ON "CampaignDailyUsage"("campaignId", "date");
 CREATE INDEX "CampaignDailyUsage_date_idx" ON "CampaignDailyUsage"("date");
-
--- CreateTable: Suppression
 CREATE TABLE "Suppression" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -296,11 +301,8 @@ CREATE TABLE "Suppression" (
 );
 CREATE INDEX "Suppression_userId_scope_emailNormalized_idx" ON "Suppression"("userId", "scope", "emailNormalized");
 CREATE INDEX "Suppression_campaignId_emailNormalized_idx" ON "Suppression"("campaignId", "emailNormalized");
--- One global suppression per (user, email) and one per (campaign, email).
 CREATE UNIQUE INDEX "Suppression_global_email_key" ON "Suppression"("userId", "emailNormalized") WHERE "scope" = 'GLOBAL' AND "campaignId" IS NULL;
 CREATE UNIQUE INDEX "Suppression_campaign_email_key" ON "Suppression"("campaignId", "emailNormalized") WHERE "scope" = 'CAMPAIGN' AND "campaignId" IS NOT NULL;
-
--- CreateTable: UnsubscribeEvent
 CREATE TABLE "UnsubscribeEvent" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -319,8 +321,6 @@ CREATE TABLE "UnsubscribeEvent" (
 );
 CREATE INDEX "UnsubscribeEvent_userId_createdAt_idx" ON "UnsubscribeEvent"("userId", "createdAt");
 CREATE INDEX "UnsubscribeEvent_emailNormalized_createdAt_idx" ON "UnsubscribeEvent"("emailNormalized", "createdAt");
-
--- CreateTable: WebhookEvent
 CREATE TABLE "WebhookEvent" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -337,8 +337,6 @@ CREATE TABLE "WebhookEvent" (
 );
 CREATE UNIQUE INDEX "WebhookEvent_provider_externalId_key" ON "WebhookEvent"("provider", "externalId");
 CREATE INDEX "WebhookEvent_userId_createdAt_idx" ON "WebhookEvent"("userId", "createdAt");
-
--- CreateTable: AuditLog
 CREATE TABLE "AuditLog" (
     "id" TEXT NOT NULL,
     "userId" TEXT,
@@ -354,8 +352,6 @@ CREATE TABLE "AuditLog" (
 );
 CREATE INDEX "AuditLog_userId_createdAt_idx" ON "AuditLog"("userId", "createdAt");
 CREATE INDEX "AuditLog_action_createdAt_idx" ON "AuditLog"("action", "createdAt");
-
--- CreateTable: ImportBatch
 CREATE TABLE "ImportBatch" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -374,8 +370,6 @@ CREATE TABLE "ImportBatch" (
     CONSTRAINT "ImportBatch_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 CREATE INDEX "ImportBatch_userId_createdAt_idx" ON "ImportBatch"("userId", "createdAt");
-
--- CreateTable: RateLimit
 CREATE TABLE "RateLimit" (
     "id" TEXT NOT NULL,
     "key" TEXT NOT NULL,
@@ -386,8 +380,6 @@ CREATE TABLE "RateLimit" (
 );
 CREATE UNIQUE INDEX "RateLimit_key_windowStart_key" ON "RateLimit"("key", "windowStart");
 CREATE INDEX "RateLimit_windowStart_idx" ON "RateLimit"("windowStart");
-
--- CreateTable: IdempotencyKey
 CREATE TABLE "IdempotencyKey" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -428,21 +420,10 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- migration: 20260102000000_features
 -- =============================================================================
--- =============================================================================
--- Features: service profiles, follow-up sequences, replies, dry run,
---            campaign approval/archive, contact tags/source/notes.
--- =============================================================================
-
--- Enum additions (PostgreSQL 12+ allows ADD VALUE inside a transaction as long
--- as the new value is not used in the same transaction -- it is not).
 ALTER TYPE "ContactStatus" ADD VALUE IF NOT EXISTS 'REPLIED';
 ALTER TYPE "ContactStatus" ADD VALUE IF NOT EXISTS 'INTERESTED';
 ALTER TYPE "CampaignStatus" ADD VALUE IF NOT EXISTS 'ARCHIVED';
-
--- CreateEnum
 CREATE TYPE "FollowUpStatus" AS ENUM ('SCHEDULED', 'SENDING', 'SENT', 'FAILED', 'CANCELLED', 'SKIPPED');
-
--- CreateTable: Service
 CREATE TABLE "Service" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -463,8 +444,6 @@ CREATE TABLE "Service" (
 CREATE UNIQUE INDEX "Service_userId_slug_key" ON "Service"("userId", "slug");
 CREATE INDEX "Service_userId_isActive_idx" ON "Service"("userId", "isActive");
 ALTER TABLE "Service" ADD CONSTRAINT "Service_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- CreateTable: FollowUpSequence
 CREATE TABLE "FollowUpSequence" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -478,8 +457,6 @@ CREATE TABLE "FollowUpSequence" (
 CREATE INDEX "FollowUpSequence_userId_isActive_idx" ON "FollowUpSequence"("userId", "isActive");
 ALTER TABLE "FollowUpSequence" ADD CONSTRAINT "FollowUpSequence_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "FollowUpSequence" ADD CONSTRAINT "FollowUpSequence_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- CreateTable: FollowUpStep
 CREATE TABLE "FollowUpStep" (
     "id" TEXT NOT NULL,
     "sequenceId" TEXT NOT NULL,
@@ -493,8 +470,6 @@ CREATE TABLE "FollowUpStep" (
 );
 CREATE UNIQUE INDEX "FollowUpStep_sequenceId_order_key" ON "FollowUpStep"("sequenceId", "order");
 ALTER TABLE "FollowUpStep" ADD CONSTRAINT "FollowUpStep_sequenceId_fkey" FOREIGN KEY ("sequenceId") REFERENCES "FollowUpSequence"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- CreateTable: FollowUpMessage
 CREATE TABLE "FollowUpMessage" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -523,8 +498,6 @@ ALTER TABLE "FollowUpMessage" ADD CONSTRAINT "FollowUpMessage_stepId_fkey" FOREI
 ALTER TABLE "FollowUpMessage" ADD CONSTRAINT "FollowUpMessage_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "FollowUpMessage" ADD CONSTRAINT "FollowUpMessage_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "FollowUpMessage" ADD CONSTRAINT "FollowUpMessage_sendJobId_fkey" FOREIGN KEY ("sendJobId") REFERENCES "SendJob"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- CreateTable: Reply
 CREATE TABLE "Reply" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -552,21 +525,15 @@ ALTER TABLE "Reply" ADD CONSTRAINT "Reply_userId_fkey" FOREIGN KEY ("userId") RE
 ALTER TABLE "Reply" ADD CONSTRAINT "Reply_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Reply" ADD CONSTRAINT "Reply_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Reply" ADD CONSTRAINT "Reply_senderAccountId_fkey" FOREIGN KEY ("senderAccountId") REFERENCES "SenderAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AlterTable: Contact -- tags / source / notes / reply tracking
 ALTER TABLE "Contact" ADD COLUMN "source" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "notes" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "tags" TEXT[] DEFAULT ARRAY[]::TEXT[];
 ALTER TABLE "Contact" ADD COLUMN "lastRepliedAt" TIMESTAMP(3);
 ALTER TABLE "Contact" ADD COLUMN "repliedCount" INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX "Contact_userId_source_idx" ON "Contact"("userId", "source");
-
--- AlterTable: EmailTemplate -- link to a service
 ALTER TABLE "EmailTemplate" ADD COLUMN "serviceId" TEXT;
 CREATE INDEX "EmailTemplate_userId_serviceId_idx" ON "EmailTemplate"("userId", "serviceId");
 ALTER TABLE "EmailTemplate" ADD CONSTRAINT "EmailTemplate_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AlterTable: Campaign -- service, archive, approval, dry run, follow-ups
 ALTER TABLE "Campaign" ADD COLUMN "serviceId" TEXT;
 ALTER TABLE "Campaign" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Campaign" ADD COLUMN "requiresApproval" BOOLEAN NOT NULL DEFAULT false;
@@ -576,8 +543,6 @@ ALTER TABLE "Campaign" ADD COLUMN "dryRun" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Campaign" ADD COLUMN "followUpSequenceId" TEXT;
 ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_followUpSequenceId_fkey" FOREIGN KEY ("followUpSequenceId") REFERENCES "FollowUpSequence"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AlterTable: SendJob -- dry run marker
 ALTER TABLE "SendJob" ADD COLUMN "dryRun" BOOLEAN NOT NULL DEFAULT false;
 
 -- Record it as applied (checksum = sha256 of the migration file).
@@ -605,15 +570,7 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- migration: 20260103000000_followup_jobs
 -- =============================================================================
--- =============================================================================
--- Follow-up jobs: SendJob becomes kind-aware and may exist without a
--- campaign recipient (a follow-up message has no CampaignRecipient row).
--- =============================================================================
-
--- CreateEnum
 CREATE TYPE "SendJobKind" AS ENUM ('ORIGINAL', 'FOLLOW_UP');
-
--- AlterTable: SendJob
 ALTER TABLE "SendJob" ALTER COLUMN "campaignRecipientId" DROP NOT NULL;
 ALTER TABLE "SendJob" ADD COLUMN "kind" "SendJobKind" NOT NULL DEFAULT 'ORIGINAL';
 ALTER TABLE "SendJob" ADD COLUMN "followUpMessageId" TEXT;
@@ -621,9 +578,6 @@ ALTER TABLE "SendJob" ADD COLUMN "subject" TEXT;
 ALTER TABLE "SendJob" ADD COLUMN "body" TEXT;
 CREATE UNIQUE INDEX "SendJob_followUpMessageId_key" ON "SendJob"("followUpMessageId");
 ALTER TABLE "SendJob" ADD CONSTRAINT "SendJob_followUpMessageId_fkey" FOREIGN KEY ("followUpMessageId") REFERENCES "FollowUpMessage"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- The follow-up side no longer holds the job FK (the job holds it), so the
--- old column and index are dropped.
 ALTER TABLE "FollowUpMessage" DROP CONSTRAINT IF EXISTS "FollowUpMessage_sendJobId_fkey";
 DROP INDEX IF EXISTS "FollowUpMessage_sendJobId_key";
 ALTER TABLE "FollowUpMessage" DROP COLUMN IF EXISTS "sendJobId";
@@ -653,17 +607,8 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- migration: 20260104000000_client_portal
 -- =============================================================================
--- =============================================================================
--- Client portal: client accounts, campaign assignment, open/click tracking.
--- =============================================================================
-
--- CreateEnum
 CREATE TYPE "TrackingEventType" AS ENUM ('OPEN', 'CLICK');
-
--- CreateEnum
 CREATE TYPE "TrackingSource" AS ENUM ('HUMAN', 'PREVIEW', 'BOT');
-
--- CreateTable: Client
 CREATE TABLE "Client" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -681,8 +626,6 @@ CREATE TABLE "Client" (
 CREATE UNIQUE INDEX "Client_email_key" ON "Client"("email");
 CREATE INDEX "Client_userId_isActive_idx" ON "Client"("userId", "isActive");
 ALTER TABLE "Client" ADD CONSTRAINT "Client_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- CreateTable: ClientCampaignAccess
 CREATE TABLE "ClientCampaignAccess" (
     "id" TEXT NOT NULL,
     "clientId" TEXT NOT NULL,
@@ -694,8 +637,6 @@ CREATE UNIQUE INDEX "ClientCampaignAccess_clientId_campaignId_key" ON "ClientCam
 CREATE INDEX "ClientCampaignAccess_campaignId_idx" ON "ClientCampaignAccess"("campaignId");
 ALTER TABLE "ClientCampaignAccess" ADD CONSTRAINT "ClientCampaignAccess_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "ClientCampaignAccess" ADD CONSTRAINT "ClientCampaignAccess_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- CreateTable: TrackingEvent
 CREATE TABLE "TrackingEvent" (
     "id" TEXT NOT NULL,
     "campaignId" TEXT NOT NULL,
@@ -709,8 +650,6 @@ CREATE TABLE "TrackingEvent" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "TrackingEvent_pkey" PRIMARY KEY ("id")
 );
--- The dedupe key is only set on the FIRST event of its kind, so repeats are
--- recorded (for the total) without blocking the insert.
 CREATE UNIQUE INDEX "TrackingEvent_dedupeKey_key" ON "TrackingEvent"("dedupeKey");
 CREATE INDEX "TrackingEvent_campaignId_type_idx" ON "TrackingEvent"("campaignId", "type");
 CREATE INDEX "TrackingEvent_campaignId_contactId_type_idx" ON "TrackingEvent"("campaignId", "contactId", "type");
@@ -718,8 +657,6 @@ CREATE INDEX "TrackingEvent_campaignId_createdAt_idx" ON "TrackingEvent"("campai
 CREATE INDEX "TrackingEvent_contactId_idx" ON "TrackingEvent"("contactId");
 ALTER TABLE "TrackingEvent" ADD CONSTRAINT "TrackingEvent_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "TrackingEvent" ADD CONSTRAINT "TrackingEvent_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AlterTable: Campaign -- per-campaign tracking switches
 ALTER TABLE "Campaign" ADD COLUMN "trackingEnabled" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Campaign" ADD COLUMN "clickTrackingEnabled" BOOLEAN NOT NULL DEFAULT false;
 
@@ -748,11 +685,6 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- migration: 20260104000001_delivered_at
 -- =============================================================================
--- Confirmed delivery timestamp.
---
--- NULL means "not known": the Gmail API and plain SMTP do not report
--- per-message delivery, so this column stays empty until a delivery webhook
--- confirms it. The reporting layer never guesses a value.
 ALTER TABLE "SendJob" ADD COLUMN "deliveredAt" TIMESTAMP(3);
 CREATE INDEX "SendJob_campaignId_deliveredAt_idx" ON "SendJob"("campaignId", "deliveredAt");
 
@@ -781,19 +713,6 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- migration: 20260105000000_pipeline_notifications
 -- =============================================================================
--- =============================================================================
--- Lead pipeline, CRM, notifications, template versioning, password reset.
---
--- Additive only: no column is dropped and no data is rewritten.
--- =============================================================================
-
--- ---------------------------------------------------------------------------
--- Enums
--- ---------------------------------------------------------------------------
-
--- The single vocabulary used for reporting, the queue UI and the client portal.
--- "ACCEPTED" means the provider took the message; "DELIVERED" only ever means
--- a delivery event confirmed it. They are never conflated.
 CREATE TYPE "MessageStatus" AS ENUM (
   'DRAFT',
   'QUEUED',
@@ -808,7 +727,6 @@ CREATE TYPE "MessageStatus" AS ENUM (
   'UNSUBSCRIBED',
   'SKIPPED'
 );
-
 CREATE TYPE "NotificationType" AS ENUM (
   'REPLY',
   'INTERESTED',
@@ -822,7 +740,6 @@ CREATE TYPE "NotificationType" AS ENUM (
   'DEAD_LETTER',
   'SYSTEM'
 );
-
 CREATE TYPE "ContactActivityType" AS ENUM (
   'CREATED',
   'IMPORTED',
@@ -841,11 +758,8 @@ CREATE TYPE "ContactActivityType" AS ENUM (
   'TASK_COMPLETED',
   'CONVERTED'
 );
-
 CREATE TYPE "TaskStatus" AS ENUM ('OPEN', 'DONE', 'CANCELLED');
-
 CREATE TYPE "LeadPriority" AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
-
 CREATE TYPE "TemplateCategory" AS ENUM (
   'OUTREACH',
   'FOLLOW_UP',
@@ -855,11 +769,6 @@ CREATE TYPE "TemplateCategory" AS ENUM (
   'ONBOARDING',
   'CUSTOM'
 );
-
--- ---------------------------------------------------------------------------
--- Tables
--- ---------------------------------------------------------------------------
-
 CREATE TABLE "Notification" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -877,7 +786,6 @@ CREATE TABLE "Notification" (
 CREATE INDEX "Notification_userId_isRead_idx" ON "Notification"("userId", "isRead");
 CREATE INDEX "Notification_userId_createdAt_idx" ON "Notification"("userId", "createdAt");
 ALTER TABLE "Notification" ADD CONSTRAINT "Notification_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "ContactActivity" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -892,7 +800,6 @@ CREATE INDEX "ContactActivity_contactId_createdAt_idx" ON "ContactActivity"("con
 CREATE INDEX "ContactActivity_userId_createdAt_idx" ON "ContactActivity"("userId", "createdAt");
 ALTER TABLE "ContactActivity" ADD CONSTRAINT "ContactActivity_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "ContactActivity" ADD CONSTRAINT "ContactActivity_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "ContactNote" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -904,7 +811,6 @@ CREATE TABLE "ContactNote" (
 CREATE INDEX "ContactNote_contactId_createdAt_idx" ON "ContactNote"("contactId", "createdAt");
 ALTER TABLE "ContactNote" ADD CONSTRAINT "ContactNote_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "ContactNote" ADD CONSTRAINT "ContactNote_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "Task" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -925,7 +831,6 @@ CREATE INDEX "Task_contactId_idx" ON "Task"("contactId");
 ALTER TABLE "Task" ADD CONSTRAINT "Task_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "Task" ADD CONSTRAINT "Task_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "Task" ADD CONSTRAINT "Task_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "LeadStage" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -941,7 +846,6 @@ CREATE TABLE "LeadStage" (
 CREATE UNIQUE INDEX "LeadStage_userId_name_key" ON "LeadStage"("userId", "name");
 CREATE INDEX "LeadStage_userId_order_idx" ON "LeadStage"("userId", "order");
 ALTER TABLE "LeadStage" ADD CONSTRAINT "LeadStage_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "CampaignSegment" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -954,7 +858,6 @@ CREATE TABLE "CampaignSegment" (
 );
 CREATE UNIQUE INDEX "CampaignSegment_userId_name_key" ON "CampaignSegment"("userId", "name");
 ALTER TABLE "CampaignSegment" ADD CONSTRAINT "CampaignSegment_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "TemplateVersion" (
     "id" TEXT NOT NULL,
     "templateId" TEXT NOT NULL,
@@ -968,7 +871,6 @@ CREATE TABLE "TemplateVersion" (
 CREATE UNIQUE INDEX "TemplateVersion_templateId_version_key" ON "TemplateVersion"("templateId", "version");
 CREATE INDEX "TemplateVersion_templateId_createdAt_idx" ON "TemplateVersion"("templateId", "createdAt");
 ALTER TABLE "TemplateVersion" ADD CONSTRAINT "TemplateVersion_templateId_fkey" FOREIGN KEY ("templateId") REFERENCES "EmailTemplate"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
 CREATE TABLE "PasswordResetToken" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -982,17 +884,9 @@ CREATE UNIQUE INDEX "PasswordResetToken_tokenHash_key" ON "PasswordResetToken"("
 CREATE INDEX "PasswordResetToken_userId_idx" ON "PasswordResetToken"("userId");
 CREATE INDEX "PasswordResetToken_expiresAt_idx" ON "PasswordResetToken"("expiresAt");
 ALTER TABLE "PasswordResetToken" ADD CONSTRAINT "PasswordResetToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- ---------------------------------------------------------------------------
--- Columns
--- ---------------------------------------------------------------------------
-
--- Service: value proposition, qualification criteria, archival.
 ALTER TABLE "Service" ADD COLUMN "valueProposition" TEXT;
 ALTER TABLE "Service" ADD COLUMN "qualificationCriteria" TEXT;
 ALTER TABLE "Service" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;
-
--- Contact: pipeline stage, priority, owner, industry, archival, conversion.
 ALTER TABLE "Contact" ADD COLUMN "industry" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "stageId" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "priority" "LeadPriority" NOT NULL DEFAULT 'MEDIUM';
@@ -1006,23 +900,17 @@ CREATE INDEX "Contact_userId_industry_idx" ON "Contact"("userId", "industry");
 CREATE INDEX "Contact_userId_isArchived_idx" ON "Contact"("userId", "isArchived");
 ALTER TABLE "Contact" ADD CONSTRAINT "Contact_stageId_fkey" FOREIGN KEY ("stageId") REFERENCES "LeadStage"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Contact" ADD CONSTRAINT "Contact_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- EmailTemplate: category, versioning, plain text, signature, archival.
 ALTER TABLE "EmailTemplate" ADD COLUMN "category" "TemplateCategory" NOT NULL DEFAULT 'OUTREACH';
 ALTER TABLE "EmailTemplate" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE "EmailTemplate" ADD COLUMN "plainTextBody" TEXT;
 ALTER TABLE "EmailTemplate" ADD COLUMN "signature" TEXT;
 ALTER TABLE "EmailTemplate" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX "EmailTemplate_userId_category_idx" ON "EmailTemplate"("userId", "category");
-
--- Campaign: plain text, signature, segment, pre-flight state.
 ALTER TABLE "Campaign" ADD COLUMN "plainTextBody" TEXT;
 ALTER TABLE "Campaign" ADD COLUMN "signature" TEXT;
 ALTER TABLE "Campaign" ADD COLUMN "segmentId" TEXT;
 ALTER TABLE "Campaign" ADD COLUMN "preflightCheckedAt" TIMESTAMP(3);
 ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_segmentId_fkey" FOREIGN KEY ("segmentId") REFERENCES "CampaignSegment"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- SendJob: dead-letter state.
 ALTER TABLE "SendJob" ADD COLUMN "deadLetteredAt" TIMESTAMP(3);
 CREATE INDEX "SendJob_deadLetteredAt_idx" ON "SendJob"("deadLetteredAt");
 

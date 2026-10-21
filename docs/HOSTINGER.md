@@ -230,10 +230,29 @@ Expected output:
 Your database is now in sync with your Prisma schema.
 ```
 
+**Seed the demo workspace** the same way, so you can sign in immediately:
+
+```bash
+DATABASE_URL="$DATABASE_URL" npx tsx prisma/seed.ts
+```
+
+It creates the owner account (`owner@example.com` / `ChangeMe123!`), a
+client account, the service profiles, the pipeline stages, a template and a
+demo campaign with contacts.
+
 ### Option 2 — the Supabase SQL Editor (no password needed)
 
 Supabase → your project → **SQL Editor** → **New query**. Paste the contents
 of `scripts/supabase-bootstrap.sql` and press **Run**.
+
+> **This script rebuilds the `public` schema.** It drops it and recreates it
+> from the committed migrations. That is what makes it reliable — the result
+> is always exactly the schema `prisma migrate deploy` produces, including the
+> two partial unique indexes that MySQL cannot express, and it can be run more
+> than once without failing.
+>
+> If the database already holds data you want to keep, **do not run it** —
+> use Option 1 (`npx prisma migrate deploy`), which never drops anything.
 
 That file is generated from the committed migrations, so it can never drift
 from them:
@@ -248,6 +267,23 @@ It creates the whole schema **and** records the migrations in
 instead of trying to apply them a second time. It ends with a `SELECT` that
 counts the tables, enums, indexes and migration records, so you can see at a
 glance that it worked.
+
+> If you see `ERROR: 42710: type "Role" already exists`, the schema was
+> **already created** — a previous run succeeded and this one is a repeat.
+> Run the verification `SELECT` below to confirm, and move on.
+>
+> ```sql
+> SELECT
+>     (SELECT count(*) FROM information_schema.tables
+>       WHERE table_schema = 'public') AS tables,
+>     (SELECT count(*) FROM pg_type WHERE typtype = 'e') AS enums,
+>     (SELECT count(*) FROM pg_indexes
+>       WHERE schemaname = 'public') AS indexes,
+>     (SELECT count(*) FROM _prisma_migrations) AS migrations;
+> ```
+>
+> The application tables are 33, the enums 24, the indexes 86 and the
+> migration records 6.
 
 **If the editor reports a syntax error**, the text was mangled on the way in
 — usually a long line was re-wrapped and a quote was lost. Every string

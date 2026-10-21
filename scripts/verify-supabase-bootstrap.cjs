@@ -39,87 +39,14 @@ const NAME = "outreach_bootverify";
 const BOOTSTRAP = path.join(__dirname, "supabase-bootstrap.sql");
 
 /**
- * Split a SQL script into individual statements.
- *
  * Prisma's $executeRawUnsafe sends a prepared statement, which can only
  * carry one command, so the script has to be split before it is applied
  * through Prisma. (The Supabase SQL Editor runs the whole script in one go -
- * this is only needed for the verification.) The splitter understands string
- * literals, quoted identifiers, line comments and block comments.
+ * this is only needed for the verification.) The shared splitter understands
+ * string literals, quoted identifiers, line comments, block comments AND
+ * dollar-quoted bodies, which the idempotent statements rely on.
  */
-function splitStatements(sql) {
-  const statements = [];
-  let current = "";
-  let i = 0;
-
-  while (i < sql.length) {
-    const ch = sql[i];
-    const next = sql[i + 1];
-
-    // Line comment
-    if (ch === "-" && next === "-") {
-      while (i < sql.length && sql[i] !== "\n") i += 1;
-      continue;
-    }
-    // Block comment
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i += 1;
-      i += 2;
-      continue;
-    }
-    // Single-quoted literal ('' escapes a quote)
-    if (ch === "'") {
-      current += ch;
-      i += 1;
-      while (i < sql.length) {
-        current += sql[i];
-        if (sql[i] === "'" && sql[i + 1] === "'") {
-          current += sql[i + 1];
-          i += 2;
-          continue;
-        }
-        if (sql[i] === "'") {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      continue;
-    }
-    // Double-quoted identifier
-    if (ch === '"') {
-      current += ch;
-      i += 1;
-      while (i < sql.length) {
-        current += sql[i];
-        if (sql[i] === '"') {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      continue;
-    }
-    // End of statement
-    if (ch === ";") {
-      const trimmed = current.trim();
-      if (trimmed && !/^BEGIN$/i.test(trimmed) && !/^COMMIT$/i.test(trimmed)) {
-        statements.push(trimmed);
-      }
-      current = "";
-      i += 1;
-      continue;
-    }
-
-    current += ch;
-    i += 1;
-  }
-
-  const tail = current.trim();
-  if (tail) statements.push(tail);
-  return statements;
-}
+const { splitStatements } = require("./lib/sql.mjs");
 
 /**
  * The URL for one of the scratch databases.
@@ -189,7 +116,9 @@ async function schemaFingerprint(url) {
 
   console.log("==> Running the bootstrap SQL exactly as the SQL Editor would");
   const sql = fs.readFileSync(BOOTSTRAP, "utf8");
-  const statements = splitStatements(sql);
+  const statements = splitStatements(sql).filter(
+    (s) => !/^BEGIN$/i.test(s) && !/^COMMIT$/i.test(s),
+  );
   console.log(`    ${statements.length} statements`);
   const p2 = new PrismaClient({ datasourceUrl: urlFor(NAME2) });
   for (const statement of statements) {
@@ -197,6 +126,22 @@ async function schemaFingerprint(url) {
   }
   await p2.$disconnect();
   console.log("    bootstrap script applied");
+
+  // --- idempotency: run it a SECOND time on the same database -----------
+  console.log("==> Running the bootstrap script a second time (must be a no-op)");
+  const p3 = new PrismaClient({ datasourceUrl: urlFor(NAME2) });
+  try {
+    for (const statement of statements) {
+      await p3.$executeRawUnsafe(statement);
+    }
+    console.log("    second run succeeded - the script is idempotent");
+  } catch (e) {
+    await p3.$disconnect().catch(() => {});
+    console.error("    SECOND RUN FAILED:", e?.meta?.message ?? e.message);
+    console.error("    the script is NOT idempotent");
+    process.exit(1);
+  }
+  await p3.$disconnect();
 
   // --- 3. does Prisma consider the migrations applied? --------------------
   console.log("==> Running `prisma migrate deploy` against the bootstrapped database");

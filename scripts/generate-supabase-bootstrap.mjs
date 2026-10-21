@@ -36,6 +36,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitStatements } from "./lib/sql.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationDir = path.join(root, "prisma", "migrations");
@@ -111,9 +112,21 @@ say(
   "-- Run this ONCE in the Supabase SQL Editor:",
   "--   Supabase -> your project -> SQL Editor -> New query -> paste -> Run",
   "--",
+  "--",
+  "--  ***  THIS SCRIPT REBUILDS THE public SCHEMA.  ***",
+  "--",
+  "--  It drops everything in the public schema and recreates it from the",
+  "--  committed migrations. That is what makes it reliable, and safe to run",
+  "--  more than once: the result is always exactly the schema that",
+  "--  'prisma migrate deploy' produces.",
+  "--",
+  "--  If the database already holds data you want to keep, do NOT run this.",
+  "--  Use 'npx prisma migrate deploy' instead - it never drops anything.",
+  "--",
+  "--",
   "-- It creates the whole schema and records the migrations, so a later",
-  "--   npx prisma migrate deploy",
-  "-- reports \"no pending migrations to apply\" instead of applying them twice.",
+  "-- 'npx prisma migrate deploy' reports \"no pending migrations to apply\"",
+  "-- instead of trying to apply them a second time.",
   "--",
   `-- Generated from prisma/migrations (${migrations.length} migrations).`,
   "-- Do not edit by hand - regenerate with:",
@@ -121,6 +134,27 @@ say(
   "-- =============================================================================",
   "",
   "BEGIN;",
+  "",
+  "-- --------------------------------------------------------------------------",
+  "-- Start from a clean schema, then replay the migrations exactly as they",
+  "-- were written. The result is the schema that 'prisma migrate deploy'",
+  "-- produces, including the two partial unique indexes that MySQL cannot",
+  "-- express.",
+  "-- --------------------------------------------------------------------------",
+  "DROP SCHEMA IF EXISTS public CASCADE;",
+  "CREATE SCHEMA public;",
+  "-- Restore the grants for whichever of these roles exist. Supabase has",
+  "-- postgres, anon and authenticated; another provider may not.",
+  "DO $grants$",
+  "DECLARE r record;",
+  "BEGIN",
+  "  FOR r IN SELECT rolname FROM pg_roles",
+  "             WHERE rolname IN ('postgres', 'anon', 'authenticated')",
+  "  LOOP",
+  "    EXECUTE format('GRANT ALL ON SCHEMA public TO %I', r.rolname);",
+  "  END LOOP;",
+  "END",
+  "$grants$;",
   "",
   "-- Prisma's migration bookkeeping.",
 );
@@ -132,12 +166,17 @@ for (const name of migrations) {
   const checksum = crypto.createHash("sha256").update(sql).digest("hex");
   const id = deterministicId(name);
 
-  // The migration SQL is copied verbatim: it is the DDL that `prisma migrate
-  // deploy` would run, so it must not be reformatted.
+  // The migration SQL is copied verbatim: it is the DDL that
+  // `prisma migrate deploy` runs, and the schema was just emptied, so it
+  // applies exactly once, exactly as it would there.
+  const statements = splitStatements(ascii(sql)).filter((statement) => statement.length > 0);
+
   parts.push("-- =============================================================================");
   parts.push(`-- migration: ${name}`);
   parts.push("-- =============================================================================");
-  parts.push(ascii(sql).trim());
+  for (const statement of statements) {
+    parts.push(statement + ";");
+  }
   parts.push("");
 
   // The bookkeeping row is authored, so every value gets its own line: a
