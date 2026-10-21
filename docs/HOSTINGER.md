@@ -85,12 +85,22 @@ Use these values:
 
 ## A3. Environment variables
 
-Hostinger reads the keys from `.env.example` and asks for each value. Fill
-them in like this:
+Hostinger reads the keys from `.env.example` and asks for each value.
+
+> **If the "Finish" button stays greyed out**, it is almost always because a
+> variable has an **empty value** — Hostinger will not accept a blank field.
+> Delete the rows for the optional Google OAuth variables if you do not have a
+> Google Cloud client yet, and make sure the field you were last editing has
+> lost focus (click elsewhere) before checking the button.
+>
+> The fastest, most reliable route is the **"Import .env"** button next to
+> "Add more": upload `.env.hostinger` from the repository root (it holds
+> every non-empty production value already filled in), then press Finish.
+> Add the Google OAuth variables by hand later if you need Gmail senders.
 
 | Key | Value |
 | --- | --- |
-| `DATABASE_URL` | `postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4-pooler.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60` |
+| `DATABASE_URL` | `postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60` |
 | `APP_URL` | `https://silver-sparrow-530238.hostingersite.com` *(see A4)* |
 | `NODE_ENV` | `production` |
 | `AUTH_SECRET` | *your existing value* — see below |
@@ -166,7 +176,7 @@ deploy). Do it once over SSH:
 ```bash
 source ~/.nvm/nvm.sh && nvm use 22
 cd ~/domains/silver-sparrow-530238.hostingersite.com/nodejs   # the app root
-export DATABASE_URL='postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4-pooler.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
+export DATABASE_URL='postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
 npx prisma migrate deploy
 ```
 
