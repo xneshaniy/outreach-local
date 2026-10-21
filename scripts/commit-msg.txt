@@ -1,0 +1,44 @@
+fix: make the Supabase bootstrap script safe to paste into the SQL Editor
+
+The Supabase SQL Editor reported:
+
+  ERROR: 42601: trailing junk after numeric literal at or near "0f80cb921417343"
+
+That position is inside the 64-character checksum of the last migration, so
+the literal must have been closed early - the editor received something
+like '...8801e3' followed by 0f80cb921417343 outside the quotes.
+
+The committed file was valid. It was applied to a clean PostgreSQL database
+without a single error, and prisma migrate deploy then reported "No pending
+migrations to apply" with a schema identical to a migrate-deploy schema.
+So the text was mangled on the way into the browser editor - a long line
+re-wrapped and a quote lost. The script made that easy to do, because each
+migration record was written as one 209-character line holding eight values,
+including two 64-character hex literals.
+
+The generated script is now built to survive a re-wrap:
+
+- Every value of a migration record is on its own line, so a 64-character
+  checksum can never be split and its closing quote can never be lost.
+- The file is plain ASCII, so a copy out of a rendered view cannot carry a
+  smart quote that silently closes a literal early.
+- The generator enforces both and refuses to write a file that breaks them.
+  It scans the output the way a parser does - understanding comments and
+  strings rather than counting quotes - and fails on a literal that spans
+  lines, a literal longer than 80 characters, a non-ASCII character, or an
+  over-long authored line.
+- The script now ends with a SELECT that counts the tables, enums, indexes
+  and migration records, so the result can be confirmed at a glance.
+
+The DDL from the migrations is still copied verbatim, because it is exactly
+what prisma migrate deploy runs.
+
+docs/HOSTINGER.md now leads with the two routes that involve no pasting at
+all - one command from your own machine, and the Supabase CLI - and keeps
+the SQL Editor as the no-password option.
+
+Verified: the new script was applied to a clean PostgreSQL database (237
+statements), prisma migrate deploy then reported "No pending migrations to
+apply", and the columns, indexes, enums and migration records are identical
+to a database built by prisma migrate deploy. Typecheck, lint and the
+secret scan are clean.

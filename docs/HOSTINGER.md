@@ -213,7 +213,24 @@ The build does **not** run migrations (a database outage should never fail a
 deploy), and the Supabase project starts out **completely empty** — no tables
 at all.
 
-### The easy way: the Supabase SQL Editor (no password needed)
+### Option 1 — one command from your own machine (recommended)
+
+If you have the database password, this is the simplest and the most reliable
+route. Nothing is pasted anywhere:
+
+```bash
+cd <the project folder>
+export DATABASE_URL='postgresql://postgres.rkxohuoiggoxgpbcgoda:YOUR_PASSWORD@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
+npx prisma migrate deploy
+```
+
+Expected output:
+
+```
+Your database is now in sync with your Prisma schema.
+```
+
+### Option 2 — the Supabase SQL Editor (no password needed)
 
 Supabase → your project → **SQL Editor** → **New query**. Paste the contents
 of `scripts/supabase-bootstrap.sql` and press **Run**.
@@ -228,18 +245,35 @@ npm run db:bootstrap        # writes scripts/supabase-bootstrap.sql
 It creates the whole schema **and** records the migrations in
 `_prisma_migrations` with the exact checksums Prisma uses, so a later
 `npx prisma migrate deploy` reports *"No pending migrations to apply"*
-instead of trying to apply them a second time.
+instead of trying to apply them a second time. It ends with a `SELECT` that
+counts the tables, enums, indexes and migration records, so you can see at a
+glance that it worked.
+
+**If the editor reports a syntax error**, the text was mangled on the way in
+— usually a long line was re-wrapped and a quote was lost. Every string
+literal in the file sits on its own line and the file is plain ASCII, so the
+generator refuses to produce a file that is easy to break; if you still hit
+it, use Option 1.
 
 This was verified end to end: the script was applied to an empty database and
 `prisma migrate deploy` then reported no pending migrations, with the
 columns, indexes, enums and migration records identical to a database built
 by `prisma migrate deploy`.
 
-### The alternative: the database password over SSH
+### Option 3 — the Supabase CLI
 
-If you would rather use the normal workflow, find the database password
-(Supabase → your project → **Settings → Database → Database password**) and
-run:
+```bash
+supabase login
+supabase init
+supabase link --project-ref rkxohuoiggoxgpbcgoda
+supabase db push
+```
+
+### Applying it over SSH instead
+
+If you would rather use the normal workflow on the server, find the database
+password (Supabase → your project → **Settings → Database → Database
+password**) and run:
 
 ```bash
 source ~/.nvm/nvm.sh && nvm use 22
@@ -257,12 +291,6 @@ export DATABASE_URL='postgresql://postgres.rkxohuoiggoxgpbcgoda:YOUR_PASSWORD@aw
 npx prisma migrate deploy
 ```
 
-Expected output:
-
-```
-Your database is now in sync with your Prisma schema.
-```
-
 > `npx prisma` needs the `prisma` CLI, which the build's `npm ci --include=dev`
 > already installed in the repository — so run this **in the repository
 > directory**, not in the `deploy/` folder.
@@ -273,15 +301,6 @@ Your database is now in sync with your Prisma schema.
 > Keep `connect_timeout=60&pool_timeout=60` in the URL. The instance suspends
 > when idle and the app retries transient connection errors, but the timeout
 > is what turns a cold start into a fast one.
-
-### The Supabase CLI
-
-```bash
-supabase login
-supabase init
-supabase link --project-ref rkxohuoiggoxgpbcgoda
-supabase db push
-```
 
 ### Supabase specifics
 

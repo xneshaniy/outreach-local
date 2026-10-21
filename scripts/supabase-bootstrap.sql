@@ -7,7 +7,7 @@
 --
 -- It creates the whole schema and records the migrations, so a later
 --   npx prisma migrate deploy
--- reports "no pending migrations" instead of applying them twice.
+-- reports "no pending migrations to apply" instead of applying them twice.
 --
 -- Generated from prisma/migrations (6 migrations).
 -- Do not edit by hand - regenerate with:
@@ -403,9 +403,26 @@ CREATE TABLE "IdempotencyKey" (
 CREATE UNIQUE INDEX "IdempotencyKey_userId_key_key" ON "IdempotencyKey"("userId", "key");
 CREATE INDEX "IdempotencyKey_createdAt_idx" ON "IdempotencyKey"("createdAt");
 
--- Record it as applied (checksum = sha256 of 20260101000000_init/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('4317a447-645c-ddde-8ddd-1c60eb07ff40', 'e7b653c019e7a89b54f760b2abbb4bab6ccdba3f036ef228dd5a89150c026917', '20260101000000_init', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    '4317a447-645c-ddde-8ddd-1c60eb07ff40',
+    'e7b653c019e7a89b54f760b2abbb4bab6ccdba3f036ef228dd5a89150c026917',
+    '20260101000000_init',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -417,7 +434,7 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 
 -- Enum additions (PostgreSQL 12+ allows ADD VALUE inside a transaction as long
--- as the new value is not used in the same transaction — it is not).
+-- as the new value is not used in the same transaction -- it is not).
 ALTER TYPE "ContactStatus" ADD VALUE IF NOT EXISTS 'REPLIED';
 ALTER TYPE "ContactStatus" ADD VALUE IF NOT EXISTS 'INTERESTED';
 ALTER TYPE "CampaignStatus" ADD VALUE IF NOT EXISTS 'ARCHIVED';
@@ -536,7 +553,7 @@ ALTER TABLE "Reply" ADD CONSTRAINT "Reply_campaignId_fkey" FOREIGN KEY ("campaig
 ALTER TABLE "Reply" ADD CONSTRAINT "Reply_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Reply" ADD CONSTRAINT "Reply_senderAccountId_fkey" FOREIGN KEY ("senderAccountId") REFERENCES "SenderAccount"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AlterTable: Contact — tags / source / notes / reply tracking
+-- AlterTable: Contact -- tags / source / notes / reply tracking
 ALTER TABLE "Contact" ADD COLUMN "source" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "notes" TEXT;
 ALTER TABLE "Contact" ADD COLUMN "tags" TEXT[] DEFAULT ARRAY[]::TEXT[];
@@ -544,12 +561,12 @@ ALTER TABLE "Contact" ADD COLUMN "lastRepliedAt" TIMESTAMP(3);
 ALTER TABLE "Contact" ADD COLUMN "repliedCount" INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX "Contact_userId_source_idx" ON "Contact"("userId", "source");
 
--- AlterTable: EmailTemplate — link to a service
+-- AlterTable: EmailTemplate -- link to a service
 ALTER TABLE "EmailTemplate" ADD COLUMN "serviceId" TEXT;
 CREATE INDEX "EmailTemplate_userId_serviceId_idx" ON "EmailTemplate"("userId", "serviceId");
 ALTER TABLE "EmailTemplate" ADD CONSTRAINT "EmailTemplate_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AlterTable: Campaign — service, archive, approval, dry run, follow-ups
+-- AlterTable: Campaign -- service, archive, approval, dry run, follow-ups
 ALTER TABLE "Campaign" ADD COLUMN "serviceId" TEXT;
 ALTER TABLE "Campaign" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Campaign" ADD COLUMN "requiresApproval" BOOLEAN NOT NULL DEFAULT false;
@@ -560,12 +577,29 @@ ALTER TABLE "Campaign" ADD COLUMN "followUpSequenceId" TEXT;
 ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_followUpSequenceId_fkey" FOREIGN KEY ("followUpSequenceId") REFERENCES "FollowUpSequence"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AlterTable: SendJob — dry run marker
+-- AlterTable: SendJob -- dry run marker
 ALTER TABLE "SendJob" ADD COLUMN "dryRun" BOOLEAN NOT NULL DEFAULT false;
 
--- Record it as applied (checksum = sha256 of 20260102000000_features/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('6bf8660f-a619-f65f-8d35-8c12aa55ed4a', '9390ea7dc5cdca66b60c50e9dc21e5f84226e9d9c1ea05c10d2a235c931493f0', '20260102000000_features', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    '6bf8660f-a619-f65f-8d35-8c12aa55ed4a',
+    '9390ea7dc5cdca66b60c50e9dc21e5f84226e9d9c1ea05c10d2a235c931493f0',
+    '20260102000000_features',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -594,9 +628,26 @@ ALTER TABLE "FollowUpMessage" DROP CONSTRAINT IF EXISTS "FollowUpMessage_sendJob
 DROP INDEX IF EXISTS "FollowUpMessage_sendJobId_key";
 ALTER TABLE "FollowUpMessage" DROP COLUMN IF EXISTS "sendJobId";
 
--- Record it as applied (checksum = sha256 of 20260103000000_followup_jobs/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('6673dd76-78e5-283c-e36a-5a1525fda21c', '7e86290d77e303604c3745678d7e9bc6ee3abeb13cc16b69f18ac04c18632dcc', '20260103000000_followup_jobs', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    '6673dd76-78e5-283c-e36a-5a1525fda21c',
+    '7e86290d77e303604c3745678d7e9bc6ee3abeb13cc16b69f18ac04c18632dcc',
+    '20260103000000_followup_jobs',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -668,13 +719,30 @@ CREATE INDEX "TrackingEvent_contactId_idx" ON "TrackingEvent"("contactId");
 ALTER TABLE "TrackingEvent" ADD CONSTRAINT "TrackingEvent_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "Campaign"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "TrackingEvent" ADD CONSTRAINT "TrackingEvent_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AlterTable: Campaign — per-campaign tracking switches
+-- AlterTable: Campaign -- per-campaign tracking switches
 ALTER TABLE "Campaign" ADD COLUMN "trackingEnabled" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Campaign" ADD COLUMN "clickTrackingEnabled" BOOLEAN NOT NULL DEFAULT false;
 
--- Record it as applied (checksum = sha256 of 20260104000000_client_portal/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('1c038417-ccbc-7a6f-69dc-6b35bb473acf', 'c3ed40c1d6f3c2a349e8d3fd3a968cb458a9fa0e29321c1b397f3b9adcbc0d8e', '20260104000000_client_portal', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    '1c038417-ccbc-7a6f-69dc-6b35bb473acf',
+    'c3ed40c1d6f3c2a349e8d3fd3a968cb458a9fa0e29321c1b397f3b9adcbc0d8e',
+    '20260104000000_client_portal',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -688,9 +756,26 @@ ON CONFLICT (id) DO NOTHING;
 ALTER TABLE "SendJob" ADD COLUMN "deliveredAt" TIMESTAMP(3);
 CREATE INDEX "SendJob_campaignId_deliveredAt_idx" ON "SendJob"("campaignId", "deliveredAt");
 
--- Record it as applied (checksum = sha256 of 20260104000001_delivered_at/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('bf26b36b-61a4-ac38-ac00-2e0f749fc4a9', '67632c1bc4773f3b005d8c7079f3837bc7382657fa976ebce494f05e90de4fd7', '20260104000001_delivered_at', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    'bf26b36b-61a4-ac38-ac00-2e0f749fc4a9',
+    '67632c1bc4773f3b005d8c7079f3837bc7382657fa976ebce494f05e90de4fd7',
+    '20260104000001_delivered_at',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -941,11 +1026,38 @@ ALTER TABLE "Campaign" ADD CONSTRAINT "Campaign_segmentId_fkey" FOREIGN KEY ("se
 ALTER TABLE "SendJob" ADD COLUMN "deadLetteredAt" TIMESTAMP(3);
 CREATE INDEX "SendJob_deadLetteredAt_idx" ON "SendJob"("deadLetteredAt");
 
--- Record it as applied (checksum = sha256 of 20260105000000_pipeline_notifications/migration.sql).
-INSERT INTO "_prisma_migrations" (id, checksum, migration_name, logs, rolled_back_at, started_at, finished_at, applied_steps_count)
-VALUES ('a2e5bd7b-a3cd-0f5b-bd30-f918348670e4', '215b8f322ec79ff6aa9a92fa113782efdbf161fdaca8801e30f80cb921417343', '20260105000000_pipeline_notifications', NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+-- Record it as applied (checksum = sha256 of the migration file).
+INSERT INTO "_prisma_migrations" (
+    id,
+    checksum,
+    migration_name,
+    logs,
+    rolled_back_at,
+    started_at,
+    finished_at,
+    applied_steps_count
+) VALUES (
+    'a2e5bd7b-a3cd-0f5b-bd30-f918348670e4',
+    '215b8f322ec79ff6aa9a92fa113782efdbf161fdaca8801e30f80cb921417343',
+    '20260105000000_pipeline_notifications',
+    NULL,
+    NULL,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    1
+)
 ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
 
--- Done. The schema is in place and the migrations are recorded.
+-- --------------------------------------------------------------------------
+-- Verification. Run this after the script; the counts must be non-zero.
+-- --------------------------------------------------------------------------
+SELECT
+    (SELECT count(*) FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name <> '_prisma_migrations') AS tables,
+    (SELECT count(*) FROM pg_type WHERE typtype = 'e') AS enums,
+    (SELECT count(*) FROM pg_indexes
+      WHERE schemaname = 'public') AS indexes,
+    (SELECT count(*) FROM _prisma_migrations) AS migrations;
