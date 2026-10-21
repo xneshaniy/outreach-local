@@ -225,6 +225,32 @@ console.log("==> Generating the Prisma client");
 // way. A missing or stale client is a classic "the build failed" cause.
 run("npx prisma generate");
 
+console.log("==> Checking the build dependencies");
+/**
+ * Fail with a clear message instead of letting the Next.js build die with
+ * "Cannot find module '@tailwindcss/postcss'".
+ *
+ * A hosting platform that installs production dependencies only leaves out
+ * everything in devDependencies - and the Next.js build loads the PostCSS
+ * config, which needs the Tailwind plugin.
+ */
+const REQUIRED_FOR_BUILD = ["next", "prisma", "@tailwindcss/postcss", "tailwindcss", "esbuild"];
+const missing = REQUIRED_FOR_BUILD.filter(
+  (name) => !fs.existsSync(path.join(root, "node_modules", name, "package.json")),
+);
+if (missing.length > 0) {
+  console.error("");
+  console.error("ERROR: these packages are needed to build the app, and they are not installed:");
+  for (const name of missing) console.error(`         - ${name}`);
+  console.error("");
+  console.error("       Install them with the development dependencies:");
+  console.error("         npm ci --include=dev");
+  console.error("");
+  console.error("       A hosting platform that sets NODE_ENV=production omits");
+  console.error("       devDependencies unless --include=dev is passed.");
+  process.exit(1);
+}
+
 console.log("==> Building Next.js (standalone output)");
 run("npx next build");
 

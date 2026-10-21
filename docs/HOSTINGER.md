@@ -559,11 +559,13 @@ project, and it would replace a setup that already works.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `Cannot find module '@prisma/client'` | The bundle was built on Windows | Build on the server (`npm run build:host`) |
-| `Invalid platform for prisma query engine` | Same as above | Build on the server |
+| `Cannot find module '@tailwindcss/postcss'` | The install step omitted the **devDependencies**, so the Tailwind PostCSS plugin was not installed | Set the install command to `npm ci --include=dev`. The build also detects this and repairs it itself, failing with a clear message if it cannot |
+| `Cannot find module '@prisma/client'` | The same — the Prisma CLI was not installed | `npm ci --include=dev` |
+| `Cannot find module 'esbuild'` | The same — the worker could not be bundled | `npm ci --include=dev` |
+| `Invalid platform for prisma query engine` | The bundle was built on Windows | Build on the server (`npm run build:host`) |
 | The build log ends without "Bundle ready" | The build command is wrong | It must be `npm run build:host` |
 | `node: command not found` over SSH | nvm is not loaded | `source ~/.nvm/nvm.sh && nvm use 22` |
-| `Can't reach database server` | Neon suspended the idle instance | Add `connect_timeout=60&pool_timeout=60` |
+| `Can't reach database server` | The database suspended the idle instance | Add `connect_timeout=60&pool_timeout=60` |
 | `relation "_prisma_migrations" does not exist` | Migrations were never applied | `npx prisma migrate deploy` |
 | *"Request origin not allowed"* on every action | `APP_URL` does not match the browser's origin | Fix `APP_URL`, then restart |
 | `AUTH_SECRET is not set` | Env vars not saved in hPanel | Add them, then redeploy / restart |
@@ -571,6 +573,31 @@ project, and it would replace a setup that already works.
 | Emails never send | The worker is not running | Look for `[launcher] starting the sender worker...` in the log |
 | Unsubscribe links point at localhost | `APP_URL` is wrong | Fix `APP_URL`, restart |
 | `ENCRYPTION_KEY` changed by accident | Stored provider tokens are unreadable | Restore the old key, or reconnect every sender account |
+
+### Why the install command matters
+
+A hosting platform that sets `NODE_ENV=production` makes **npm omit
+devDependencies** — and everything the build needs is a devDependency:
+
+| Package | Needed by |
+| --- | --- |
+| `@tailwindcss/postcss`, `tailwindcss` | the PostCSS config, which `next build` loads |
+| `prisma` | `prisma generate` |
+| `esbuild` | the worker bundle |
+| `typescript` | the type check inside `next build` |
+
+So the install command must be `npm ci --include=dev`.
+
+`prisma` is the awkward one: it is an *optional peer dependency* of
+`@prisma/client`, which is a production dependency — so npm installs it even
+in a production-only install. That makes it useless as a signal for "are the
+build dependencies present?", which is why the build checks for **every
+package it actually loads** instead of for a proxy.
+
+The build is safe either way: it lists the packages it needs, installs them
+with `--include=dev` when any are missing, and refuses to continue with a
+half-installed tree — so a production-only install produces a clear error
+instead of `Cannot find module '@tailwindcss/postcss'`.
 
 ---
 

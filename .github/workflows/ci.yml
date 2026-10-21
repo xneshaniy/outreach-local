@@ -110,6 +110,35 @@ jobs:
           test -d deploy/node_modules/.prisma/client
           echo "deployment bundle OK"
 
+  hosting-build:
+    name: Builds the way a hosting platform does
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # A hosting platform sets NODE_ENV=production, and npm then omits
+      # devDependencies. Everything the build needs - the Tailwind PostCSS
+      # plugin, the Prisma CLI, esbuild - is a devDependency, so the build has
+      # to notice and repair that itself. This job proves it does.
+      - name: Install without the development dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: The build must repair the install
+        run: npm run build:host
+
+      - name: The deployment bundle must be complete
+        run: |
+          test -f deploy/server/server.js
+          test -f deploy/worker/index.cjs
+          test -f deploy/start.js
+          test -d deploy/node_modules/.prisma/client
+          echo "deployment bundle OK"
+
   docker:
     name: Docker image builds
     runs-on: ubuntu-latest

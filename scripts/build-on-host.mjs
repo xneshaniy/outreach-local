@@ -123,45 +123,84 @@ try {
 heading("Checking the dependencies");
 
 /**
- * Are the dependencies already installed?
+ * The packages the BUILD needs.
  *
- * A hosting panel normally runs its own install step before the build, so
- * installing again would double the build time - and a build that takes too
- * long is a build that fails.
+ * `prisma` on its own is not a reliable signal: it is an optional peer
+ * dependency of `@prisma/client`, which is a production dependency, so npm
+ * installs it even in a production-only install. An earlier check looked at
+ * `next` and `prisma` only, concluded the dependencies were complete, skipped
+ * the install - and the Next.js build then died with
+ * "Cannot find module '@tailwindcss/postcss'".
+ *
+ * So the check names every package the build actually loads.
  */
-function dependenciesInstalled() {
-  const modules = path.join(root, "node_modules");
-  if (!fs.existsSync(modules)) return false;
-  // next and the Prisma CLI are both needed for the build.
-  return (
-    fs.existsSync(path.join(modules, "next", "package.json")) &&
-    fs.existsSync(path.join(modules, "prisma", "package.json"))
+const BUILD_PACKAGES = [
+  "next",
+  "prisma",
+  "@prisma/client",
+  "@tailwindcss/postcss",
+  "tailwindcss",
+  "esbuild",
+  "typescript",
+];
+
+function missingBuildPackages() {
+  return BUILD_PACKAGES.filter(
+    (name) => !fs.existsSync(path.join(root, "node_modules", name, "package.json")),
   );
 }
 
-const haveDependencies = dependenciesInstalled();
+let missing = missingBuildPackages();
 
 if (forceInstall) {
   console.log("    installing (--install)");
-} else if (haveDependencies) {
+} else if (missing.length === 0) {
   console.log("    already installed - skipping");
   console.log("    (the hosting panel installs them in its own step; installing");
   console.log("     again would double the build time)");
 } else if (skipInstall) {
   console.error("");
-  console.error("ERROR: --skip-install was given, but the dependencies are not installed.");
-  console.error("       node_modules/next or node_modules/prisma is missing.");
+  console.error("ERROR: --skip-install was given, but these build packages are missing:");
+  for (const name of missing) console.error(`         - ${name}`);
+  console.error("");
+  console.error("       The hosting panel must install with the development");
+  console.error("       dependencies:  npm ci --include=dev");
   process.exit(1);
 } else {
-  console.log("    installing");
+  console.log(`    missing: ${missing.join(", ")}`);
+  console.log("    installing (a production-only install omits them)");
 }
 
-if (forceInstall || (!haveDependencies && !skipInstall)) {
+if (forceInstall || missing.length > 0) {
   const hasLock = fs.existsSync(path.join(root, "package-lock.json"));
+  const hasNodeModules = fs.existsSync(path.join(root, "node_modules"));
+
+  // A clean tree needs a clean install. An existing tree can be repaired
+  // incrementally, which takes seconds instead of minutes - and a build that
+  // takes too long is a build that fails.
+  const command = hasNodeModules
+    ? "npm install --include=dev --no-audit --no-fund"
+    : hasLock
+      ? "npm ci --include=dev --no-audit --no-fund"
+      : "npm install --include=dev --no-audit --no-fund";
+
   // --include=dev matters: hosting platforms set NODE_ENV=production, and npm
-  // then omits devDependencies - which is where the Prisma CLI and esbuild
-  // live. Without them the build cannot run.
-  run(hasLock ? "npm ci --include=dev --no-audit --no-fund" : "npm install --include=dev --no-audit --no-fund");
+  // then omits devDependencies - which is where the Prisma CLI, esbuild and
+  // the Tailwind PostCSS plugin live. Without them the build cannot run.
+  run(command);
+
+  // Never continue with a half-installed tree: the Next.js build would fail
+  // with a confusing "Cannot find module" further down.
+  missing = missingBuildPackages();
+  if (missing.length > 0) {
+    console.error("");
+    console.error("ERROR: these build packages are still missing after the install:");
+    for (const name of missing) console.error(`         - ${name}`);
+    console.error("");
+    console.error("       Check that the install step allows devDependencies");
+    console.error("       (npm ci --include=dev) and that it can reach the registry.");
+    process.exit(1);
+  }
 }
 
 /* -------------------------------------------------------------------------- */

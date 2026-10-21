@@ -618,7 +618,10 @@ scripts/
   build-on-host.mjs     build on the target server (correct native binaries)
   build-on-host.sh      the same, as a shell wrapper
   check-secrets.cjs     fail if a tracked file contains a secret
+  check-omit-dev.cjs    what a production-only install leaves out
   clean-build-test.ps1  clone, install, build and start, exactly like a host
+  simulate-hosting-install.cjs  the hosting panel's case: a production-only
+                         install followed by the build
   export-postgres-dump.mjs  portable SQL dump of the live database
   generate-supabase-bootstrap.mjs  SQL script that builds the schema in the
                          Supabase SQL Editor (no database password needed)
