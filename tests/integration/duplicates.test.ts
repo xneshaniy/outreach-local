@@ -11,6 +11,7 @@ import {
   dbEnabled,
   preflight,
   resetDatabase,
+  retryOnTransientDbError,
 } from "./helpers";
 
 /**
@@ -80,9 +81,13 @@ describe.runIf(dbEnabled)("database-enforced duplicate prevention", () => {
       { email: "ada@example.test", emailNormalized: "ada@example.test", timeZone: "UTC" },
     ];
 
+    // A managed, pooled database can refuse to start a transaction while two
+    // imports compete for a connection. That is an infrastructure failure and
+    // must not be confused with a duplicate-prevention bug. The import is
+    // idempotent, so retrying it is safe.
     const [a, b] = await Promise.all([
-      addContactsToCampaign(campaign, rows),
-      addContactsToCampaign(campaign, rows),
+      retryOnTransientDbError(() => addContactsToCampaign(campaign, rows)),
+      retryOnTransientDbError(() => addContactsToCampaign(campaign, rows)),
     ]);
 
     expect(a.added + b.added).toBe(1);

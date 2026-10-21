@@ -23,14 +23,20 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$(pwd)"
 
 INSTALL_TO=""
+SKIP_INSTALL="false"
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-to)
       INSTALL_TO="${2:-}"
       shift 2
       ;;
+    --skip-install)
+      # The hosting platform already ran `npm install` as its own build step.
+      SKIP_INSTALL="true"
+      shift
+      ;;
     -h | --help)
-      sed -n '2,20p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *)
@@ -96,7 +102,9 @@ echo "==> Platform: $(uname -s)/$(uname -m)"
 # ---------------------------------------------------------------------------
 echo
 echo "==> Installing dependencies"
-if [ -f package-lock.json ]; then
+if [ "$SKIP_INSTALL" = "true" ]; then
+  echo "    (skipped - the platform already installed them)"
+elif [ -f package-lock.json ]; then
   npm ci --no-audit --no-fund
 else
   npm install --no-audit --no-fund

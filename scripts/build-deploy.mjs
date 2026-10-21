@@ -257,9 +257,10 @@ copyWorkerDependencies();
 // 4. Prisma schema + migrations so `migrate deploy` can be run on the host.
 copyDir(path.join(root, "prisma"), path.join(out, "prisma"));
 
-// 4b. Shared-hosting helpers (Apache proxy + pm2 start script).
+// 4b. Shared-hosting helpers (Apache proxy + pm2 start script + the
+//     single-process launcher for platforms that start only one entry file).
 const templates = path.join(root, "scripts", "templates");
-for (const file of [".htaccess", "start.sh"]) {
+for (const file of [".htaccess", "start.sh", "start.js"]) {
   const from = path.join(templates, file);
   if (fs.existsSync(from)) {
     fs.copyFileSync(from, path.join(out, file));
@@ -296,7 +297,11 @@ fs.writeFileSync(
       private: true,
       version: "0.1.0",
       scripts: {
-        start: "node server/server.js",
+        // `start.js` runs the web server AND the sender worker, so a platform
+        // that supervises a single process (Hostinger, Railway, Fly) is
+        // enough to run the whole application.
+        start: "node start.js",
+        "start:web": "node server/server.js",
         worker: "node worker/index.cjs",
         "db:deploy": "prisma migrate deploy",
       },

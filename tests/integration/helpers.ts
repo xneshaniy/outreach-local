@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/db";
+import { prisma, isTransientDbError } from "@/lib/db";
 import { normalizeEmail, normalizeTimeZone } from "@/lib/email-normalize";
 
 /**
@@ -40,7 +40,43 @@ export async function resetDatabase(): Promise<void> {
   const tables = await listTables();
   if (tables.length === 0) return;
   const list = tables.map((t) => `"${t}"`).join(", ");
-  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`);
+  await retryOnTransientDbError(() =>
+    prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`),
+  );
+}
+
+/**
+ * Detect a transient infrastructure failure from the database.
+ *
+ * Re-exported from the application so the test suite and the running app
+ * agree on exactly which failures are worth retrying. A managed, pooled
+ * PostgreSQL can refuse to hand out a connection or fail to start a
+ * transaction while the suite is hammering it; Prisma reports that as a
+ * timeout instead of a business error. Such a failure says nothing about
+ * the code under test, so the tests retry rather than assert on it.
+ *
+ * Business errors (a quota error, a unique-constraint violation, a failed
+ * assertion) are NEVER classified as transient, so a real bug still fails.
+ */
+export { isTransientDbError };
+
+/** Run an operation, retrying it while the database reports a transient error. */
+export async function retryOnTransientDbError<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  delayMs = 1500,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
+  throw lastError;
 }
 
 let counter = 0;

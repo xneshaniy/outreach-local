@@ -272,6 +272,28 @@ psql "$DATABASE_URL" -c 'CREATE DATABASE outreach_test;'
 DATABASE_URL=".../outreach_test" npx prisma migrate deploy
 ```
 
+#### The test database must NOT use a transaction pooler
+
+The integration suite opens several transactions at once on purpose — that is
+how it proves the quota and duplicate-prevention guarantees hold under
+contention. A transaction pooler (Neon's `-pooler` host, PgBouncer) has a
+limited number of backend connections, so it hands out *"Unable to start a
+transaction in the given time"* / *"Timed out fetching a new connection"*
+errors instead of running the transactions. Those failures are infrastructure
+noise, not application bugs, and they make the suite flaky.
+
+Point `TEST_DATABASE_URL` at the **direct** (non-pooled) endpoint and give
+Prisma a pool that is large enough for the contention the tests create:
+
+```bash
+# Neon: use the host WITHOUT "-pooler"
+export TEST_DATABASE_URL="postgresql://user:pass@db-host/db?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60&connection_limit=20"
+```
+
+`connection_limit` must be at least the number of transactions the tests run
+concurrently (the quota test opens 8). The CI workflow provisions a local
+PostgreSQL service, which has no such limit, so CI is unaffected.
+
 ### Session middleware and the Edge Runtime
 
 The middleware runs in the **Edge Runtime**, where `process.env` values are

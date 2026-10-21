@@ -28,6 +28,25 @@ const eslintConfig = [
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },
+  {
+    // Deployment templates are copied verbatim into the deploy bundle and run
+    // as plain CommonJS scripts on the server (not part of the Next.js app).
+    files: ["scripts/templates/**/*.{js,cjs}"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        __dirname: "readonly",
+        console: "readonly",
+        process: "readonly",
+        require: "readonly",
+        module: "writable",
+        setTimeout: "readonly",
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 ];
 
 export default eslintConfig;

@@ -446,9 +446,16 @@ psql "$DATABASE_URL" -c 'CREATE DATABASE outreach_test;'
 DATABASE_URL="postgresql://.../outreach_test" npx prisma migrate deploy
 
 # 3. Run the suite
-TEST_DATABASE_URL="postgresql://.../outreach_test?sslmode=require" \
+TEST_DATABASE_URL="postgresql://.../outreach_test?sslmode=require&connection_limit=20" \
   npx vitest run tests/integration
 ```
+
+> **Do not point the test database at a transaction pooler.** The suite opens
+> several transactions at once on purpose, and a pooler (Neon's `-pooler`
+> host, PgBouncer) answers with *"Unable to start a transaction in the given
+> time"* instead of running them. Use the **direct** endpoint and set
+> `connection_limit` to at least 20. CI provisions a local PostgreSQL, so it
+> is unaffected.
 
 They cover: unique-constraint duplicate prevention, concurrent duplicate
 imports, deterministic idempotency keys, disjoint concurrent claiming,
@@ -496,7 +503,7 @@ builds the Docker image.
 
 - `npx tsc --noEmit` — clean.
 - `npx eslint .` — clean.
-- `npx vitest run` — **102/102 tests pass** (71 unit + 31 integration against a
+- `npx vitest run` — **218/218 tests pass** (110 unit + 108 integration against a
   real PostgreSQL database).
 - `npx prisma migrate deploy` — applies the committed migration to a live
   database.

@@ -47,10 +47,18 @@ function normalizeDatabaseUrl(raw: string): string {
  * managed database waking up from an idle suspend. The work was not applied,
  * so retrying is safe for reads; for writes the caller is inside a
  * transaction, which is rolled back before the error propagates.
+ *
+ * A transaction pooler adds two more shapes:
+ *   - "Unable to start a transaction in the given time" / P2024: the pooler
+ *     had no backend connection to hand out, so the transaction never began.
+ *   - P2034: a write conflict (serialization failure) between two
+ *     transactions. Retrying is the documented remedy.
  */
 const TRANSIENT_PATTERNS = [
   /can't reach database server/i,
   /timed out fetching a new connection/i,
+  /unable to start a transaction/i,
+  /connection pool timeout/i,
   /server has closed the connection/i,
   /connection (?:was )?closed/i,
   /connection reset/i,
@@ -58,12 +66,15 @@ const TRANSIENT_PATTERNS = [
   /econnrefused/i,
   /epipe/i,
   /terminating connection/i,
+  /too many clients/i,
   /the database system is (?:starting up|shutting down)/i,
   /P1001/i,
   /P1002/i,
   /P1008/i,
   /P1010/i,
   /P1017/i,
+  /P2024/i,
+  /P2034/i,
 ];
 
 export function isTransientDbError(err: unknown): boolean {

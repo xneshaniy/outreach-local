@@ -9,8 +9,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/worker/index.cjs --packages=external",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/worker/index.cjs --packages=external",
     "build:deploy": "node scripts/build-deploy.mjs",
+    "build:host": "bash scripts/build-on-host.sh --skip-install",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
