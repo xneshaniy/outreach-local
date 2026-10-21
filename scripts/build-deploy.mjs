@@ -219,6 +219,12 @@ function copyWorkerDependencies() {
 console.log("==> Cleaning previous bundle");
 fs.rmSync(out, { recursive: true, force: true });
 
+console.log("==> Generating the Prisma client");
+// npx downloads the CLI if devDependencies were omitted (a hosting platform
+// that sets NODE_ENV=production makes npm skip them), so this works either
+// way. A missing or stale client is a classic "the build failed" cause.
+run("npx prisma generate");
+
 console.log("==> Building Next.js (standalone output)");
 run("npx next build");
 

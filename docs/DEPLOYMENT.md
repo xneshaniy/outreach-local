@@ -40,11 +40,10 @@ npm run build:deploy
 
 # 3. In the panel, create the Node.js application
 #      Application root:    outreach
-#      Startup file:        server/server.js
-#      Node version:        20.x or 22.x
-#    Add a SECOND application (or a background process / cron job) for the
-#    worker:
-#      Startup file:        worker/index.cjs
+#      Startup file:        start.js      (web app AND sender worker)
+#      Node version:        22.x
+#    `start.js` runs both the web server and the worker. To run them
+#    separately instead, use server/server.js and worker/index.cjs.
 
 # 4. Set the environment variables in the panel (see section 3)
 
@@ -217,12 +216,17 @@ docker build -t email-outreach-platform:latest .
 
 ```bash
 npm ci
-npx prisma generate
 npx prisma migrate deploy
-npm run build && npm run build:worker
+npm run build
 node .next/standalone/server.js     # app
 node dist/worker/index.cjs          # worker (separate process/service)
+# ...or both, from one process:
+node start.js
 ```
+
+`npm run build` generates the Prisma client, builds the worker and the app,
+and assembles the standalone output. It uses `npx prisma generate`, so it
+works even on a host that installed only the production dependencies.
 
 Use a process manager (systemd, PM2) so both roles restart on failure.
 

@@ -63,6 +63,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check for committed secrets
+        run: node scripts/check-secrets.cjs
+
       - name: Unit tests
         run: npx vitest run tests/unit
 
@@ -88,7 +91,18 @@ jobs:
         run: npx vitest run tests/integration
 
       - name: Build (Next.js + worker bundle)
-        run: npm run build && npm run build:worker
+        run: npm run build
+
+      - name: Build the deployment bundle
+        run: npm run build:deploy
+
+      - name: Check the deployment bundle is complete
+        run: |
+          test -f deploy/server/server.js
+          test -f deploy/worker/index.cjs
+          test -f deploy/start.js
+          test -d deploy/node_modules/.prisma/client
+          echo "deployment bundle OK"
 
   docker:
     name: Docker image builds

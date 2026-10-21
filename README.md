@@ -471,7 +471,12 @@ consumed, no follow-ups scheduled).
 migrations and runs both suites plus the Docker build on every push.
 ## Deployment
 
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The short version:
+**Hostinger (shared hosting)?** Follow [`docs/HOSTINGER.md`](docs/HOSTINGER.md)
+— it has the exact hPanel settings, the environment variables, and the
+migration step.
+
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for everything else. The short
+version:
 
 1. Build the image: `docker compose build` (or `docker build -t eop .`).
 2. Run `prisma migrate deploy` as a release step (the `migrate` service does it).
@@ -480,8 +485,13 @@ See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The short version:
 4. Set `APP_URL` to your public HTTPS URL, and regenerate `AUTH_SECRET` /
    `ENCRYPTION_KEY` for production.
 
-`.github/workflows/ci.yml` lints, typechecks, runs unit tests, spins up
-PostgreSQL, applies migrations, runs the integration suite, builds the app, and
+**Without Docker:** `npm run build:host` builds a self-contained bundle in
+`deploy/` (with the Prisma engine compiled for the machine it is built on),
+and `node deploy/start.js` runs the web app and the sender worker together.
+
+`.github/workflows/ci.yml` lints, typechecks, runs the secret scan, runs unit
+tests, spins up PostgreSQL, applies migrations, runs the integration suite,
+builds the app and the deployment bundle, checks the bundle is complete, and
 builds the Docker image.
 
 ## Security notes
@@ -603,8 +613,12 @@ prisma/
   migrations/          committed SQL migrations
   seed.ts              idempotent demo seed
 scripts/
-  build-deploy.mjs     self-contained bundle for shared hosting
-  build-on-host.sh     build on the target server (correct native binaries)
+  build.mjs             the production build (prisma + worker + app)
+  build-deploy.mjs      self-contained bundle for shared hosting
+  build-on-host.mjs     build on the target server (correct native binaries)
+  build-on-host.sh      the same, as a shell wrapper
+  check-secrets.cjs     fail if a tracked file contains a secret
+  clean-build-test.ps1  clone, install, build and start, exactly like a host
   export-postgres-dump.mjs  portable SQL dump of the live database
   generate-supabase-bootstrap.mjs  SQL script that builds the schema in the
                          Supabase SQL Editor (no database password needed)

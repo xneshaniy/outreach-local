@@ -74,11 +74,12 @@ Use these values:
 - `npm ci --include=dev` matters: hosting platforms set `NODE_ENV=production`,
   and npm then omits devDependencies — which is where the Prisma CLI and
   esbuild live. Without them the build cannot run.
-- `npm run build:host` runs `scripts/build-on-host.sh`, which generates the
+- `npm run build:host` runs `scripts/build-on-host.mjs`, which generates the
   Prisma client **for the server's own platform** and assembles the
   self-contained bundle in `deploy/`. This step is not optional: the Prisma
   query engine is a native binary, and one built for the wrong OS will not
-  start.
+  start. It is written in Node, so it needs no shell, no `nvm` and no PATH
+  juggling — it only needs `node`.
 - `deploy` is the output directory, so the app's files are `deploy/server`,
   `deploy/worker` and `deploy/node_modules`.
 - `start.js` is a small launcher that starts **both** the web server and the
@@ -87,11 +88,32 @@ Use these values:
   process by hand. It finds the bundle itself, so it works whether Hostinger
   starts it from the application root or from the output directory.
 
+### If the platform insists on its own build command
+
+Some panels have a fixed "Build command" field, or a Next.js preset they
+apply on their own. Two things make that work:
+
+- **`npm run build`** is now a Node script (`scripts/build.mjs`) that
+  generates the Prisma client with `npx prisma generate` — so it works even
+  when the platform omitted devDependencies — then builds the worker and the
+  app, and assembles the standalone output.
+- **`start.js` at the repository root** starts whatever was built: the
+  deployment bundle when `deploy/` exists, or the plain Next.js build
+  otherwise. The worker runs in both cases.
+
+So any of these entry points work:
+
+| Entry file | Start command |
+| --- | --- |
+| `start.js` | `node start.js` |
+| `deploy/start.js` | `node deploy/start.js` |
+| `server/server.js` | `node server/server.js` (web app only) |
+
 **If the log says `Cannot find module .../deploy/deploy/start.js`**
 
-That means Hostinger ran the command with the working directory already set to
-the output directory. Change the **Start command** to `node start.js` and
-redeploy. (`scripts/simulate-hostinger.ps1` verifies all three layouts.)
+That means the platform ran the command with the working directory already
+set to the output directory. Change the **Start command** to `node start.js`
+and redeploy. (`scripts/simulate-hostinger.ps1` verifies all three layouts.)
 
 ## A3. Environment variables
 
