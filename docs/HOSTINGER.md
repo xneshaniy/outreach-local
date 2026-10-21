@@ -171,12 +171,24 @@ live. A successful build ends with:
 ## A5. Apply the database migrations
 
 The build does **not** run migrations (a database outage should never fail a
-deploy). Do it once over SSH:
+deploy). Do it once over SSH.
+
+Hostinger clones the repository somewhere under your domain folder, and the
+exact path depends on how you set up the app. Find it instead of guessing:
 
 ```bash
 source ~/.nvm/nvm.sh && nvm use 22
-cd ~/domains/silver-sparrow-530238.hostingersite.com/nodejs   # the app root
+find ~/domains -maxdepth 4 -type d -name prisma -path "*prisma" 2>/dev/null
+```
+
+That prints the directory that holds `schema.prisma` and `migrations/`.
+`cd` into it and run the migration:
+
+```bash
+cd <the directory the find command printed>
+
 export DATABASE_URL='postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
+
 npx prisma migrate deploy
 ```
 
@@ -185,6 +197,13 @@ Expected output:
 ```
 Your database is now in sync with your Prisma schema.
 ```
+
+> `npx prisma` needs the `prisma` CLI, which the build's `npm ci` already
+> installed in the repository — so run this **in the repository directory**,
+> not in the `deploy/` folder.
+>
+> `DATABASE_URL` is not in your SSH shell: the hPanel environment variables
+> only apply to the app process, which is why you export it above.
 
 > Keep `connect_timeout=60&pool_timeout=60` in the URL. Neon suspends idle
 > instances and the app retries transient connection errors, but the timeout
