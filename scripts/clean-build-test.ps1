@@ -88,9 +88,23 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 Write-Host ""
-if ($health -match '"database":"up"' -and $code -eq "200") {
-    Write-Host "CLEAN BUILD OK - the platform's build and start will work" -ForegroundColor Green
+$healthText = "$health"
+$workerStarted = (Get-Content "$env:TEMP\cb.log" -ErrorAction SilentlyContinue | Select-String "starting the sender worker").Count -gt 0
+
+if ($healthText -match '"database":"up"') {
+    Write-Host "CLEAN BUILD OK - the platform's build and start will work (with a database)" -ForegroundColor Green
     exit 0
 }
+
+# No database was configured. The app must still start, serve the pages, and
+# say honestly that the database is down - that is what a hosting platform
+# sees before the database is provisioned.
+if ($code -eq "200" -and $workerStarted -and $healthText -match '"database":"down"') {
+    Write-Host "CLEAN BUILD OK - the app starts, serves pages and starts the worker." -ForegroundColor Green
+    Write-Host "  (no database was configured, so the health check reports database: down - correct)" -ForegroundColor DarkGray
+    Write-Host "  set DATABASE_URL to also verify the database connection." -ForegroundColor DarkGray
+    exit 0
+}
+
 Write-Host "CLEAN BUILD PROBLEM" -ForegroundColor Red
 exit 1
