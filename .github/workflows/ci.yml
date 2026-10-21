@@ -93,6 +93,12 @@ jobs:
       - name: Build (Next.js + worker bundle)
         run: npm run build
 
+      - name: Build without production secrets
+        # A hosting platform usually applies the environment variables to the
+        # running app, not to the build step. The build must not need them,
+        # so this proves it by removing them.
+        run: env -u AUTH_SECRET -u ENCRYPTION_KEY -u DATABASE_URL npm run build
+
       - name: Build the deployment bundle
         run: npm run build:deploy
 

@@ -185,6 +185,26 @@ unsubscribe URL in outgoing mail, and the CSRF origin check. If it is wrong,
 unsubscribe links and OAuth will break. Add any extra trusted origins (e.g. an
 alternate domain) to `EXTRA_ALLOWED_ORIGINS` as a comma-separated list.
 
+### The build does not need the secrets
+
+`next build` imports the route modules to collect page data, which evaluates
+`src/lib/env.ts`. The build therefore **must not** require `AUTH_SECRET` or
+`ENCRYPTION_KEY` — a hosting platform normally applies the environment
+variables to the running app, not to the build step, and a build that demands
+them fails before it can start.
+
+So the build uses a placeholder, and the **running app** still fails fast if
+the secrets are missing:
+
+```
+POST /api/auth/login -> 500
+Error: Missing required environment variable: AUTH_SECRET
+```
+
+The CI builds the app twice on purpose — once normally, and once with
+`AUTH_SECRET`, `ENCRYPTION_KEY` and `DATABASE_URL` removed — so this can never
+regress silently.
+
 ## 4. Options
 
 ### 4a. Docker Compose (single host)

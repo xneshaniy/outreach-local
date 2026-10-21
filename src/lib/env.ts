@@ -11,7 +11,24 @@ import { z } from "zod";
 
 const isProd = process.env.NODE_ENV === "production";
 
+/**
+ * True while `next build` is running.
+ *
+ * Next.js imports the route modules to collect page data, which evaluates
+ * this file. A build must not need the production secrets: a hosting
+ * platform usually only applies them to the running app, not to the build
+ * step, and a build that demands them fails before it can start.
+ *
+ * The placeholder below is only ever used by the build process. The server
+ * evaluates this module again when it starts, where the check below applies
+ * and a missing secret still fails fast.
+ */
+const isBuild = process.env.NEXT_PHASE === "phase-production-build";
+
 function devFallback(name: string, value: string): string {
+  if (isBuild) {
+    return value;
+  }
   if (isProd) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
