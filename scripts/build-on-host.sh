@@ -105,9 +105,12 @@ echo "==> Installing dependencies"
 if [ "$SKIP_INSTALL" = "true" ]; then
   echo "    (skipped - the platform already installed them)"
 elif [ -f package-lock.json ]; then
-  npm ci --no-audit --no-fund
+  # --include=dev matters: hosting platforms set NODE_ENV=production, and npm
+  # then omits devDependencies - which is where the Prisma CLI and esbuild
+  # live. Without them the build cannot run.
+  npm ci --include=dev --no-audit --no-fund
 else
-  npm install --no-audit --no-fund
+  npm install --include=dev --no-audit --no-fund
 fi
 
 echo

@@ -30,7 +30,12 @@ const out = path.join(root, "deploy");
  */
 function run(cmd) {
   console.log(`> ${cmd}`);
-  execSync(cmd, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+  // Always go through a shell. On Linux `execSync` without a shell splits the
+  // command on spaces and execs the pieces directly, which breaks as soon as
+  // a path or an argument contains a space - and on Windows `npx`/`npm` are
+  // `.cmd` shims that need a shell to be found at all. The commands used here
+  // contain no shell metacharacters.
+  execSync(cmd, { cwd: root, stdio: "inherit", shell: true });
 }
 
 function copyDir(from, to) {

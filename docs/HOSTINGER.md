@@ -9,7 +9,7 @@ which is the recommended path — and **Route B** — building over SSH.
 > **The one thing to know up front:** this application requires
 > **PostgreSQL**. Hostinger's shared hosting only offers MySQL, and the
 > schema uses PostgreSQL enums, partial unique indexes, `gen_random_uuid()`
-> and `FOR UPDATE SKIP LOCKED`. **Keep using Neon** (or any managed
+> and `FOR UPDATE SKIP LOCKED`. **Use Supabase** (or any managed
 > PostgreSQL) and point `DATABASE_URL` at it. Do not try to switch the app to
 > MySQL.
 
@@ -60,17 +60,20 @@ Use these values:
 
 | Setting | Value |
 | --- | --- |
-| Install command | `npm ci` |
+| Install command | `npm ci --include=dev` |
 | **Build command** | **`npm run build:host`** |
 | **Output directory** | **`deploy`** |
 | **Entry file** | **`start.js`** |
-| Start command | `node start.js` *(if the form shows one)* |
+| **Start command** | **`node deploy/start.js`** |
 
 > If the form only offers a **Start command** and no Entry file, use
-> `node deploy/start.js` instead.
+> `node deploy/start.js` on its own.
 
 **What each of these does**
 
+- `npm ci --include=dev` matters: hosting platforms set `NODE_ENV=production`,
+  and npm then omits devDependencies — which is where the Prisma CLI and
+  esbuild live. Without them the build cannot run.
 - `npm run build:host` runs `scripts/build-on-host.sh`, which generates the
   Prisma client **for the server's own platform** and assembles the
   self-contained bundle in `deploy/`. This step is not optional: the Prisma
@@ -81,7 +84,14 @@ Use these values:
 - `start.js` is a small launcher that starts **both** the web server and the
   sender worker from this single entry point — so Hostinger's restart button
   restarts the whole application and you never have to supervise a second
-  process by hand.
+  process by hand. It finds the bundle itself, so it works whether Hostinger
+  starts it from the application root or from the output directory.
+
+**If the log says `Cannot find module .../deploy/deploy/start.js`**
+
+That means Hostinger ran the command with the working directory already set to
+the output directory. Change the **Start command** to `node start.js` and
+redeploy. (`scripts/simulate-hostinger.ps1` verifies all three layouts.)
 
 ## A3. Environment variables
 
@@ -94,13 +104,15 @@ Hostinger reads the keys from `.env.example` and asks for each value.
 > lost focus (click elsewhere) before checking the button.
 >
 > The fastest, most reliable route is the **"Import .env"** button next to
-> "Add more": upload `.env.hostinger` from the repository root (it holds
-> every non-empty production value already filled in), then press Finish.
-> Add the Google OAuth variables by hand later if you need Gmail senders.
+> "Add more": upload `.env.hostinger` from the project root on your machine.
+> It holds every non-empty production value already filled in. (It is
+> gitignored, so it is on your disk and not in the GitHub repo.) Then press
+> Finish. Add the Google OAuth variables by hand later if you need Gmail
+> senders.
 
 | Key | Value |
 | --- | --- |
-| `DATABASE_URL` | `postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60` |
+| `DATABASE_URL` | `postgresql://postgres.rkxohuoiggoxgpbcgoda:YOUR_PASSWORD@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60` |
 | `APP_URL` | `https://silver-sparrow-530238.hostingersite.com` *(see A4)* |
 | `NODE_ENV` | `production` |
 | `AUTH_SECRET` | *your existing value* — see below |
@@ -187,7 +199,7 @@ That prints the directory that holds `schema.prisma` and `migrations/`.
 ```bash
 cd <the directory the find command printed>
 
-export DATABASE_URL='postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-truth-ahx828x4.c-3.us-east-1.aws.neon.tech/neondb?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
+export DATABASE_URL='postgresql://postgres.rkxohuoiggoxgpbcgoda:YOUR_PASSWORD@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60'
 
 npx prisma migrate deploy
 ```
@@ -198,16 +210,57 @@ Expected output:
 Your database is now in sync with your Prisma schema.
 ```
 
-> `npx prisma` needs the `prisma` CLI, which the build's `npm ci` already
-> installed in the repository — so run this **in the repository directory**,
-> not in the `deploy/` folder.
+> `npx prisma` needs the `prisma` CLI, which the build's `npm ci --include=dev`
+> already installed in the repository — so run this **in the repository
+> directory**, not in the `deploy/` folder.
 >
 > `DATABASE_URL` is not in your SSH shell: the hPanel environment variables
 > only apply to the app process, which is why you export it above.
-
-> Keep `connect_timeout=60&pool_timeout=60` in the URL. Neon suspends idle
-> instances and the app retries transient connection errors, but the timeout
+>
+> Keep `connect_timeout=60&pool_timeout=60` in the URL. The instance suspends
+> when idle and the app retries transient connection errors, but the timeout
 > is what turns a cold start into a fast one.
+
+### Supabase specifics
+
+**Your project.** Project ref `rkxohuoiggoxgpbcgoda`, region `ap-northeast-1`.
+Use the **session pooler**, not the direct host:
+
+| Supabase option | Host | Use it? |
+| --- | --- | --- |
+| **Session pooler** | `aws-0-ap-northeast-1.pooler.supabase.com:5432` | ✅ **Use this** — IPv4, real sessions |
+| Direct connection | `db.rkxohuoiggoxgpbcgoda.supabase.co:5432` | ❌ IPv6-only (no A record) — unreachable from IPv4-only hosting |
+| Transaction pooler | `aws-0-ap-northeast-1.pooler.supabase.com:6543` | ⚠️ Needs `pgbouncer=true`, and Prisma's interactive transactions do not work with it |
+
+The direct host has **no IPv4 address** — it resolves to an IPv6 address only.
+Shared hosting is IPv4, so the direct host cannot be used.
+
+The **database password** is not the API key. It is in Supabase → your project
+→ **Settings → Database → Database password** (or press "Reset database
+password" to set a new one). The `sb_publishable_…` key is the public API
+key; this application does not need it, because it talks to PostgreSQL
+directly.
+
+**Row Level Security.** Supabase enables RLS on tables created in the
+dashboard. The application connects as the table owner, which bypasses RLS,
+so the tables created by `prisma migrate deploy` work as they are. Just do
+not turn on "Force RLS" — that applies policies to the owner too and breaks
+every query.
+
+**Connection limit.** Supabase caps how many direct connections a project can
+open. The session pooler multiplexes them, so a single Node app is well
+inside the limit. If you ever scale the app out, add
+`&connection_limit=5` to the URL.
+
+**Applying the migrations with the Supabase CLI** (an alternative to the
+password step — it authenticates with your access token instead):
+
+```bash
+supabase login
+supabase init
+supabase link --project-ref rkxohuoiggoxgpbcgoda
+supabase db push
+```
 
 ## A6. Verify
 

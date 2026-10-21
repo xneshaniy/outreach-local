@@ -13,6 +13,7 @@
     "build:deploy": "node scripts/build-deploy.mjs",
     "build:host": "bash scripts/build-on-host.sh --skip-install",
     "start": "next start",
+    "start:deploy": "node deploy/start.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "worker": "tsx src/worker/index.ts",

@@ -605,6 +605,8 @@ prisma/
 scripts/
   build-deploy.mjs     self-contained bundle for shared hosting
   build-on-host.sh     build on the target server (correct native binaries)
+  export-postgres-dump.mjs  portable SQL dump of the live database
+  simulate-hostinger.ps1  verify the bundle starts in every hosting layout
 tests/
   unit/                no-database unit tests
   integration/         opt-in, real-PostgreSQL tests

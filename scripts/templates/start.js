@@ -13,29 +13,61 @@
  * platform's restart button therefore restarts BOTH, and they always share
  * the same environment.
  *
+ * The bundle can be started from the repository root (`node deploy/start.js`)
+ * or from inside the bundle directory (`node start.js`), and the working
+ * directory may be either one - so the bundle root is resolved by looking for
+ * the files that must be there.
+ *
  * Set RUN_WORKER=false to run the web app only (for example while debugging).
  */
+const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const ROOT = __dirname;
-const WORKER_ENTRY = path.join(ROOT, "worker", "index.cjs");
-const SERVER_ENTRY = path.join(ROOT, "server", "server.js");
+/** True once a shutdown signal has been received. */
+let shuttingDown = false;
 
 /** Log with a prefix so the two processes are distinguishable in one log. */
 function log(message, ...rest) {
   console.log(`[launcher] ${message}`, ...rest);
 }
 
+/**
+ * Find the directory that holds server/ and worker/.
+ *
+ * @returns {string} the bundle root
+ */
+function findBundleRoot() {
+  const candidates = [__dirname, path.join(__dirname, ".."), process.cwd()];
+
+  for (const dir of candidates) {
+    if (
+      fs.existsSync(path.join(dir, "server", "server.js")) &&
+      fs.existsSync(path.join(dir, "worker", "index.cjs"))
+    ) {
+      return dir;
+    }
+  }
+
+  console.error(
+    "[launcher] Could not find the deployment bundle.\n" +
+      "[launcher] Expected server/server.js and worker/index.cjs next to this file.\n" +
+      `[launcher] Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
+  );
+  process.exit(1);
+}
+
+const ROOT = findBundleRoot();
+const WORKER_ENTRY = path.join(ROOT, "worker", "index.cjs");
+const SERVER_ENTRY = path.join(ROOT, "server", "server.js");
+
 let worker = null;
 
 if (process.env.RUN_WORKER !== "false") {
-  const { existsSync } = require("node:fs");
-
-  if (!existsSync(WORKER_ENTRY)) {
+  if (!fs.existsSync(WORKER_ENTRY)) {
     log("WARNING: worker/index.cjs is missing - running the web app only.");
   } else {
-    log("starting the sender worker...");
+    log(`starting the sender worker (${WORKER_ENTRY})...`);
     worker = spawn(process.execPath, [WORKER_ENTRY], {
       stdio: "inherit",
       env: process.env,
@@ -47,14 +79,14 @@ if (process.env.RUN_WORKER !== "false") {
 
     worker.on("exit", (code, signal) => {
       if (shuttingDown) return;
-      log(`worker exited unexpectedly (code=${code} signal=${signal}) - the platform will restart the app.`);
+      log(
+        `worker exited unexpectedly (code=${code} signal=${signal}) - the platform will restart the app.`,
+      );
       // Exit non-zero so the platform's supervisor notices and restarts us.
       process.exit(code ?? 1);
     });
   }
 }
-
-let shuttingDown = false;
 
 /** Stop the worker, then exit. */
 function shutdown(signal) {
@@ -73,5 +105,6 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
 }
 
 // The standalone server starts as soon as it is required.
+log(`bundle root: ${ROOT}`);
 log(`starting the web server on port ${process.env.PORT ?? 3000}...`);
 require(SERVER_ENTRY);
