@@ -23,6 +23,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
+    "db:export": "node scripts/export-postgres-dump.mjs",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio"
   },

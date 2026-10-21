@@ -358,6 +358,104 @@ the worker back after a container restart, add an hPanel cron job
 
 ---
 
+# Moving the DATABASE onto Hostinger
+
+> This is only possible with a **Hostinger VPS**. Shared hosting has no
+> PostgreSQL, and the MySQL database you can create there **cannot** run this
+> application — see [Why not MySQL](#why-not-mysql).
+
+Shared hosting's MySQL cannot be used because the schema is PostgreSQL
+(`provider = "postgresql"` in `prisma/schema.prisma`) and it relies on
+features MySQL does not have:
+
+| Feature the app needs | Where | MySQL |
+| --- | --- | --- |
+| **Partial unique indexes** | 2 migrations | not supported at all |
+| `ON CONFLICT` upserts | 8 places in `src/` | different syntax |
+| `gen_random_uuid()::text` | 4 places in `src/` | no `::` casts |
+| `FOR UPDATE SKIP LOCKED` | `src/lib/queue.ts` | different semantics |
+| Postgres enums | 24 types | mapped differently by Prisma |
+
+The partial unique indexes are the decisive one: they are what enforces
+"one global suppression per email, and one per campaign per email". MySQL has
+no filtered indexes, so that guarantee would have to move into application
+code — reintroducing exactly the race the database-level design prevents.
+
+## Option A — a VPS running the whole stack (recommended)
+
+One server, everything on Hostinger, and the worker is supervised for you.
+
+1. Buy a **VPS** with at least 2 GB RAM.
+2. SSH in and install Docker (Hostinger's VPS image has it, or use
+   `get.docker.com`).
+3. Clone and start:
+
+   ```bash
+   git clone https://github.com/xneshaniy/outreach-local.git ~/outreach
+   cd ~/outreach
+   cp .env.example .env
+   nano .env          # DATABASE_URL, AUTH_SECRET, ENCRYPTION_KEY, APP_URL, DRY_RUN=false
+   docker compose up -d --build
+   ```
+
+   `docker compose` starts `db` (PostgreSQL 16, persistent volume), a one-shot
+   `migrate` service, `app` and `worker`.
+4. Put nginx or Caddy in front for TLS, and point the domain at the VPS.
+
+## Option B — a VPS with hPanel PostgreSQL, app on shared hosting
+
+1. VPS → hPanel → **Databases → PostgreSQL** → create the database and user.
+2. **Move the data across** with the dump script:
+
+   ```bash
+   # On your machine: export the live database
+   DATABASE_URL="postgresql://...your-neon-url..." npm run db:export -- outreach-dump.sql
+
+   # Copy it to the VPS, then restore it
+   scp outreach-dump.sql root@YOUR-VPS:/root/
+   ssh root@YOUR-VPS
+   psql "postgresql://user:pass@127.0.0.1:5432/outreach?sslmode=disable" -f /root/outreach-dump.sql
+   ```
+
+   The dump contains the schema (replayed from the committed migrations) and
+   every row, so the target database is an exact copy.
+3. Put the new `DATABASE_URL` in the Hostinger app's environment variables
+   and restart.
+
+## If you would rather stay on shared hosting
+
+Keep using **Neon**. It needs no server, it is already migrated and seeded,
+and it is what the current deployment is verified against. The only thing
+"on Hostinger" then means is the app itself, which is exactly what the
+GitHub integration in Route A does.
+
+---
+
+## Why not MySQL
+
+<details>
+<summary>Why not MySQL?</summary>
+
+The application is PostgreSQL-only, and not by a small margin:
+
+- `prisma/schema.prisma` declares `provider = "postgresql"`. The schema, the
+  Prisma client and every migration are Postgres.
+- **2 partial (filtered) unique indexes** — MySQL has no equivalent at all.
+- **8 `ON CONFLICT` clauses** — Postgres upsert syntax.
+- **4 `gen_random_uuid()` calls** with `::text` casts — Postgres-only syntax.
+- **3 `FOR UPDATE SKIP LOCKED`** sites — the atomic job-claiming mechanism.
+- **24 Postgres enums** and **38 foreign-key constraints**.
+- **17 raw-SQL call sites** in `src/` would each need rewriting.
+
+Porting would mean rewriting the schema, both migrations, every raw query and
+the concurrency semantics — and re-validating the duplicate-prevention and
+quota guarantees that the whole design rests on. That is a large, risky
+project, and it would replace a setup that already works.
+
+</details>
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
