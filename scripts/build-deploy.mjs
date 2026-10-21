@@ -13,6 +13,7 @@
  */
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import { builtinModules } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -91,6 +92,125 @@ function pruneBundle() {
   }
 }
 
+/**
+ * The packages copied into deploy/node_modules.
+ *
+ * The bundle's package.json is generated from this list, so that running
+ * `npm install` inside the bundle reproduces exactly the same tree instead of
+ * pruning the worker's dependencies as "extraneous".
+ */
+let workerPackages = [];
+
+/**
+ * Copy the worker's runtime dependency closure into the bundle.
+ *
+ * The worker is compiled with `--packages=external`, so every `import` of a
+ * third-party package stays a real `require()` at runtime. Those packages are
+ * NOT part of the Next.js standalone output (which lives in server/), so a
+ * worker started from the bundle root would fail with
+ * "Cannot find module '@prisma/client'".
+ *
+ * Inside the repository this is masked by the project's own node_modules one
+ * directory up — on a real server there is nothing above the bundle, so the
+ * closure has to be copied in explicitly.
+ */
+function copyWorkerDependencies() {
+  const workerFile = path.join(out, "worker", "index.cjs");
+  if (!fs.existsSync(workerFile)) {
+    console.log("    !! worker bundle missing — skipping dependency copy");
+    return;
+  }
+  const source = fs.readFileSync(workerFile, "utf8");
+
+  // Every bare specifier the bundle still requires.
+  const builtins = new Set(builtinModules.map((m) => m.replace(/^node:/, "")));
+  const specifiers = new Set();
+  const requireRe = /require\(\s*["']([^"']+)["']\s*\)/g;
+  let m;
+  while ((m = requireRe.exec(source)) !== null) {
+    const spec = m[1];
+    if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) continue;
+    // Node built-ins ("crypto", "fs", "path", ...) are provided by the runtime.
+    if (builtins.has(spec)) continue;
+    specifiers.add(spec);
+  }
+
+  // Map a specifier to the package that provides it ("dotenv/config" -> "dotenv").
+  const packageOf = (spec) => {
+    const parts = spec.split("/");
+    return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  };
+
+  /** Resolve a package directory in the project's node_modules. */
+  const findPackage = (name) => {
+    const direct = path.join(root, "node_modules", name);
+    if (fs.existsSync(path.join(direct, "package.json"))) return direct;
+    // Fall back to a nested copy (npm sometimes nests a conflicting version).
+    for (const scopeOrPkg of fs.readdirSync(path.join(root, "node_modules"), { withFileTypes: true })) {
+      if (!scopeOrPkg.isDirectory()) continue;
+      const base = path.join(root, "node_modules", scopeOrPkg.name);
+      if (scopeOrPkg.name.startsWith("@")) {
+        for (const inner of fs.readdirSync(base, { withFileTypes: true })) {
+          if (!inner.isDirectory()) continue;
+          const nested = path.join(base, inner.name);
+          if (nested.endsWith(path.join("node_modules", name))) return nested;
+        }
+      }
+    }
+    return null;
+  };
+
+  // Walk the dependency closure.
+  const closure = new Set();
+  const queue = [...specifiers].map(packageOf);
+  while (queue.length) {
+    const name = queue.shift();
+    if (!name || closure.has(name)) continue;
+    const dir = findPackage(name);
+    if (!dir) {
+      console.log(`    !! could not locate package "${name}" — it will be missing at runtime`);
+      continue;
+    }
+    closure.add(name);
+    const pkgJson = path.join(dir, "package.json");
+    try {
+      const meta = JSON.parse(fs.readFileSync(pkgJson, "utf8"));
+      for (const dep of Object.keys(meta.dependencies ?? {})) queue.push(dep);
+      for (const dep of Object.keys(meta.optionalDependencies ?? {})) queue.push(dep);
+    } catch {
+      /* ignore unreadable manifests */
+    }
+  }
+
+  for (const name of closure) {
+    const from = findPackage(name);
+    if (!from) continue;
+    const to = path.join(out, "node_modules", name);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.cpSync(from, to, { recursive: true, dereference: true });
+
+    // Record the version so the bundle's package.json stays in sync.
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(from, "package.json"), "utf8"));
+      workerPackages.push({ name, version: meta.version ?? "latest" });
+    } catch {
+      workerPackages.push({ name, version: "latest" });
+    }
+  }
+
+  // The generated Prisma client (native engine) must sit next to it.
+  const prismaClient = path.join(root, "node_modules", ".prisma", "client");
+  if (fs.existsSync(prismaClient)) {
+    copyDir(prismaClient, path.join(out, "node_modules", ".prisma", "client"));
+  }
+
+  workerPackages.sort((a, b) => a.name.localeCompare(b.name));
+
+  console.log(
+    `    added ${closure.size} runtime package(s) for the worker: ${[...closure].sort().join(", ")}`,
+  );
+}
+
 console.log("==> Cleaning previous bundle");
 fs.rmSync(out, { recursive: true, force: true });
 
@@ -129,6 +249,11 @@ reportNativeBinaries();
 // 3. Worker.
 copyDir(path.join(root, "dist", "worker"), path.join(out, "worker"));
 
+// 3b. The worker still `require()`s its third-party packages at runtime, and
+//     the Next.js standalone output does not contain them. Copy the worker's
+//     dependency closure into the bundle so it runs from the bundle root.
+copyWorkerDependencies();
+
 // 4. Prisma schema + migrations so `migrate deploy` can be run on the host.
 copyDir(path.join(root, "prisma"), path.join(out, "prisma"));
 
@@ -143,6 +268,26 @@ for (const file of [".htaccess", "start.sh"]) {
 }
 
 // 5. Minimal package.json for the host.
+//
+//    The dependency list is generated from the packages that were actually
+//    copied into deploy/node_modules, so `npm install` inside the bundle
+//    reproduces the same tree instead of pruning the worker's dependencies
+//    as "extraneous".
+const bundleDependencies = {};
+for (const pkg of workerPackages) {
+  bundleDependencies[pkg.name] = `^${pkg.version}`;
+}
+// The Prisma CLI is only needed to run migrations; it is not a runtime dep of
+// the worker, but `npm install` should provide it for `npx prisma migrate`.
+let prismaVersion = "^6.0.0";
+try {
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  prismaVersion = rootPkg.devDependencies?.prisma ?? rootPkg.dependencies?.prisma ?? prismaVersion;
+} catch {
+  /* keep the default */
+}
+bundleDependencies.prisma = prismaVersion;
+
 fs.writeFileSync(
   path.join(out, "package.json"),
   JSON.stringify(
@@ -155,27 +300,29 @@ fs.writeFileSync(
         worker: "node worker/index.cjs",
         "db:deploy": "prisma migrate deploy",
       },
-      dependencies: {
-        "@prisma/client": "^6.0.0",
-        prisma: "^6.0.0",
+      engines: {
+        node: ">=20.9.0",
       },
+      dependencies: bundleDependencies,
     },
     null,
     2,
   ) + "\n",
 );
+console.log(`    package.json lists ${Object.keys(bundleDependencies).length} dependencies`);
 
 fs.writeFileSync(
   path.join(out, "README.txt"),
   [
-    "EMAIL OUTREACH PLATFORM - DEPLOYMENT (shared hosting / cPanel / StackCP)",
+    "EMAIL OUTREACH PLATFORM - DEPLOYMENT (Hostinger / cPanel / StackCP)",
     "=======================================================================",
     "",
     "CONTENTS OF THIS FOLDER",
     "  server/      Next.js standalone server  (node server/server.js)",
     "  worker/      background sender        (node worker/index.cjs)",
+    "  node_modules/ the worker's runtime deps, incl. the Prisma engine",
     "  prisma/      schema + migrations",
-    "  .htaccess    Apache reverse proxy config (for the SSH/pm2 route)",
+    "  .htaccess    Apache/LiteSpeed proxy config (for the SSH/pm2 route)",
     "  start.sh     start/stop script using pm2 (for the SSH/pm2 route)",
     "  .env.example environment variables you must set",
     "",
@@ -186,7 +333,45 @@ fs.writeFileSync(
     "     cd ~/outreach",
     "     bash scripts/build-on-host.sh",
     "",
-    "RECOMMENDED ROUTE (works on any cPanel with SSH)",
+    "=======================================================================",
+    "HOSTINGER  (hPanel -> Websites -> <domain> -> Setup Node.js App)",
+    "=======================================================================",
+    "",
+    "  1. Over SSH, build the bundle on the server:",
+    "       cd ~/outreach",
+    "       source ~/.nvm/nvm.sh && nvm use 22",
+    "       bash scripts/build-on-host.sh --install-to ~/domains/<domain>/nodejs",
+    "  2. Apply the migrations (once per release):",
+    "       cd ~/outreach && npx prisma migrate deploy",
+    "  3. hPanel -> Setup Node.js App:",
+    "       Node.js version  : 22.x",
+    "       Application mode : Production",
+    "       Application root : nodejs",
+    "       Application URL  : server/server.js",
+    "  4. Add the environment variables in the panel (DATABASE_URL,",
+    "     AUTH_SECRET, ENCRYPTION_KEY, APP_URL, HOSTNAME=0.0.0.0,",
+    "     NODE_ENV=production, DRY_RUN=true). Then Restart Application.",
+    "  5. Start the WORKER over SSH with pm2 (it is a separate process and",
+    "     the app will never send without it):",
+    "       cd ~/domains/<domain>/nodejs",
+    "       npm install -g pm2",
+    "       pm2 start worker/index.cjs --name outreach-worker --time",
+    "       pm2 save",
+    "     The worker does not inherit the panel's environment variables -",
+    "     put them in a .env file in that folder and `set -a; . ./.env; set +a`",
+    "     before starting pm2, or pass them inline.",
+    "  6. hPanel -> Websites -> Domains -> point the domain at the app, and",
+    "     Security -> SSL -> Install Let's Encrypt.",
+    "  7. Verify:",
+    "       curl -s https://<your-domain>/api/health",
+    "     Expected: {\"status\":\"ok\",\"database\":\"up\"}",
+    "",
+    "  Full guide in the repository: docs/HOSTINGER.md",
+    "",
+    "=======================================================================",
+    "GENERIC ROUTE  (cPanel / StackCP with SSH)",
+    "=======================================================================",
+    "",
     "  1. Clone the repository (cPanel -> Git(TM) Version Control):",
     "       Repository: https://github.com/xneshaniy/outreach-local.git",
     "       Directory:  outreach",
@@ -205,28 +390,17 @@ fs.writeFileSync(
     "     Apache then proxies every request to 127.0.0.1:3000.",
     "  7. Verify:",
     "       curl http://127.0.0.1:3000/api/health",
-    "       curl https://outreach.growthleder.com/api/health",
+    "       curl https://<your-domain>/api/health",
     "",
-    "ALTERNATIVE ROUTE (cPanel 'Setup Node.js App' panel)",
-    "  a) Create Application 1 (the web app):",
-    "       Node.js version : 20.x or 22.x",
-    "       Application mode : Production",
-    "       Application root : outreach",
-    "       Application URL  : server/server.js",
-    "     Add the environment variables, then 'Restart Application'.",
-    "  b) Create Application 2 (the worker):",
-    "       Application root : outreach",
-    "       Application URL  : worker/index.cjs",
-    "     The worker has no URL - it just runs.",
-    "  c) Domains -> point outreach.growthleder.com at Application 1.",
-    "  (With this route you must still build on the server, or the Prisma",
-    "   engine will not match the host OS.)",
-    "",
+    "=======================================================================",
     "NOTES",
+    "=======================================================================",
+    "",
     "  * This application requires PostgreSQL. MySQL is NOT supported.",
     "  * The worker is a separate process - without it, no email is ever sent.",
     "  * Managed Postgres (Neon/Supabase) suspends idle instances: keep",
     "    connect_timeout=60&pool_timeout=60 in DATABASE_URL.",
+    "  * Keep DRY_RUN=true until the whole pipeline has been verified.",
     "",
   ].join("\n"),
 );

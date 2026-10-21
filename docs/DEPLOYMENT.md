@@ -21,7 +21,11 @@ You may run **multiple workers** concurrently; the queue is designed for it
 
 ---
 
-## 0. Quick path: shared hosting (cPanel / StackCP) without Docker
+## 0. Quick path: shared hosting (Hostinger / cPanel / StackCP) without Docker
+
+> **Deploying to Hostinger? Follow [`HOSTINGER.md`](HOSTINGER.md)** — it has
+> the exact hPanel steps, the environment-variable list, and how to run the
+> worker there.
 
 If your host has **"Setup Node.js App"** (Node ≥ 20.9) you can deploy without
 Docker at all:
