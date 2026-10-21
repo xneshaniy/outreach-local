@@ -29,6 +29,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /* -------------------------------------------------------------------------- */
 let installTo = "";
 let skipInstall = false;
+let forceInstall = false;
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i += 1) {
@@ -38,13 +39,20 @@ for (let i = 0; i < args.length; i += 1) {
     i += 1;
   } else if (arg === "--skip-install") {
     skipInstall = true;
+  } else if (arg === "--install") {
+    forceInstall = true;
   } else if (arg === "-h" || arg === "--help") {
     console.log(
       [
-        "Usage: node scripts/build-on-host.mjs [--skip-install] [--install-to <dir>]",
+        "Usage: node scripts/build-on-host.mjs [--skip-install] [--install] [--install-to <dir>]",
         "",
-        "  --skip-install     the platform already ran the install step",
+        "  --skip-install     never install; fail if the dependencies are missing",
+        "  --install          always install, even if node_modules is already there",
         "  --install-to <dir> copy the finished bundle to <dir> afterwards",
+        "",
+        "By default the dependencies are installed only when they are not",
+        "already there - a hosting panel usually runs its own install step",
+        "before the build, and installing twice doubles the build time.",
       ].join("\n"),
     );
     process.exit(0);
@@ -112,10 +120,43 @@ try {
 /* -------------------------------------------------------------------------- */
 /* 1. Dependencies                                                              */
 /* -------------------------------------------------------------------------- */
-heading("Installing dependencies");
-if (skipInstall) {
-  console.log("    (skipped - the platform already installed them)");
+heading("Checking the dependencies");
+
+/**
+ * Are the dependencies already installed?
+ *
+ * A hosting panel normally runs its own install step before the build, so
+ * installing again would double the build time - and a build that takes too
+ * long is a build that fails.
+ */
+function dependenciesInstalled() {
+  const modules = path.join(root, "node_modules");
+  if (!fs.existsSync(modules)) return false;
+  // next and the Prisma CLI are both needed for the build.
+  return (
+    fs.existsSync(path.join(modules, "next", "package.json")) &&
+    fs.existsSync(path.join(modules, "prisma", "package.json"))
+  );
+}
+
+const haveDependencies = dependenciesInstalled();
+
+if (forceInstall) {
+  console.log("    installing (--install)");
+} else if (haveDependencies) {
+  console.log("    already installed - skipping");
+  console.log("    (the hosting panel installs them in its own step; installing");
+  console.log("     again would double the build time)");
+} else if (skipInstall) {
+  console.error("");
+  console.error("ERROR: --skip-install was given, but the dependencies are not installed.");
+  console.error("       node_modules/next or node_modules/prisma is missing.");
+  process.exit(1);
 } else {
+  console.log("    installing");
+}
+
+if (forceInstall || (!haveDependencies && !skipInstall)) {
   const hasLock = fs.existsSync(path.join(root, "package-lock.json"));
   // --include=dev matters: hosting platforms set NODE_ENV=production, and npm
   // then omits devDependencies - which is where the Prisma CLI and esbuild
