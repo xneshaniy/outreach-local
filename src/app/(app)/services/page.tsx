@@ -140,6 +140,11 @@ export default function ServicesPage() {
   return (
     <>
       <PageHeader
+        eyebrow={
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--muted)]">
+            {services.length} business lines
+          </span>
+        }
         title="Services"
         description="One profile per business line — used to group campaigns, templates and follow-up sequences."
         actions={

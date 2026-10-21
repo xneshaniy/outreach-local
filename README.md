@@ -521,6 +521,40 @@ These are also exercised by CI (`.github/workflows/ci.yml`), which provisions
 PostgreSQL. If you run them locally and something fails, it is a real bug — fix
 it rather than assuming the code is right.
 
+## Design system
+
+Every screen is built from one set of primitives, so the product reads as a
+single product rather than a set of screens.
+
+**Tokens** (`src/app/globals.css`) — one accent colour, a soft neutral canvas,
+white surfaces, deep navy text, and one radius / shadow / spacing scale. Dark
+mode is a token swap, not a second design.
+
+**Components** (`src/components/ui/index.tsx`) — `Button`, `Card`, `StatCard`,
+`Input`, `Textarea`, `Select`, `Checkbox`, `Field`, `Badge`, `StatusBadge`,
+`Table`, `Pagination`, `Modal`, `ConfirmDialog`, `Tabs`, `Menu`, `Tooltip`,
+`InfoHint`, `ProgressBar`, `Skeleton`, `EmptyState`, `ErrorState`, `Note`.
+
+**Charts** (`src/components/charts.tsx`) — dependency-free SVG: `LineChart`,
+`BarChart`, `DonutChart`, `Sparkline`. They draw only the data they are given;
+an empty dataset renders an explicit empty state rather than a flat line.
+
+**Rules the whole UI follows**
+
+- One accent colour, used only for the primary action.
+- Semantic colours only for meaning (success / warning / danger / info).
+- A metric the system cannot know is shown as **"Not available"** — never as
+  zero, and never invented.
+- Estimated metrics (open rate) are labelled as estimates wherever they appear.
+- Every control is keyboard reachable, labelled, and has a visible focus ring.
+- Exactly one `<h1>`, one `<main>` and one `<nav>` per page.
+- `prefers-reduced-motion` is respected.
+
+**Responsive behaviour** — the sidebar is fixed on desktop and becomes a
+slide-in drawer below 1024px; tables scroll horizontally inside their card
+instead of breaking the layout; the wizard stacks into a single column; modals
+become bottom sheets on small screens.
+
 ## Project layout
 
 ```

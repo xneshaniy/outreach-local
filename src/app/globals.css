@@ -3,22 +3,105 @@
 /* Class-based dark mode (toggled on <html> by the theme script + UI toggle). */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ===========================================================================
+   Design tokens
+   ---------------------------------------------------------------------------
+   A single, restrained system:
+     - soft neutral canvas, white surfaces
+     - deep navy / charcoal text
+     - one professional accent (indigo)
+     - subtle borders, very light shadows
+     - one radius scale, one shadow scale, one spacing rhythm
+   =========================================================================== */
+
 :root {
-  --background: #f6f7fb;
+  /* Surfaces */
+  --background: #f7f8fb;
   --surface: #ffffff;
-  --border: #e4e7ef;
-  --text: #171a24;
-  --muted: #616982;
+  --surface-2: #fbfcfe;
+  --surface-3: #f2f4f8;
+
+  /* Lines */
+  --border: #e6e9f0;
+  --border-strong: #d6dae4;
+
+  /* Type */
+  --text: #0f1729;
+  --text-secondary: #3d475e;
+  --muted: #6b7590;
+  --muted-2: #97a0b5;
+
+  /* Accent */
   --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0fe;
+  --accent-border: #c9cdf7;
+  --on-accent: #ffffff;
+
+  /* Semantic */
+  --success: #059669;
+  --success-soft: #e7f6f0;
+  --success-border: #b6e4d3;
+  --warning: #b45309;
+  --warning-soft: #fdf3e4;
+  --warning-border: #f2d5a8;
+  --danger: #dc2626;
+  --danger-soft: #fdecec;
+  --danger-border: #f5c2c2;
+  --info: #2563eb;
+  --info-soft: #e9effd;
+  --info-border: #c3d3f7;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-full: 999px;
+
+  /* Elevation */
+  --shadow-xs: 0 1px 2px rgb(15 23 41 / 0.04);
+  --shadow-sm: 0 1px 3px rgb(15 23 41 / 0.06), 0 1px 2px rgb(15 23 41 / 0.04);
+  --shadow-md: 0 4px 12px rgb(15 23 41 / 0.07), 0 1px 3px rgb(15 23 41 / 0.04);
+  --shadow-lg: 0 12px 32px rgb(15 23 41 / 0.12), 0 2px 8px rgb(15 23 41 / 0.05);
+
+  /* Layout */
+  --sidebar-width: 264px;
+  --topbar-height: 60px;
 }
 
 .dark {
   --background: #0b1020;
-  --surface: #121933;
-  --border: #24304f;
-  --text: #e8ebf5;
-  --muted: #97a0bd;
+  --surface: #111730;
+  --surface-2: #151c38;
+  --surface-3: #1b2342;
+  --border: #232c4c;
+  --border-strong: #2f3960;
+  --text: #eef1f8;
+  --text-secondary: #c2c9dc;
+  --muted: #8f99b5;
+  --muted-2: #6b7590;
   --accent: #818cf8;
+  --accent-hover: #a5b0ff;
+  --accent-soft: #1e2547;
+  --accent-border: #343d66;
+  --on-accent: #0b1020;
+  --success: #34d399;
+  --success-soft: #10281f;
+  --success-border: #1d4a3a;
+  --warning: #fbbf24;
+  --warning-soft: #2a2113;
+  --warning-border: #4d3a1c;
+  --danger: #f87171;
+  --danger-soft: #2c1717;
+  --danger-border: #522626;
+  --info: #60a5fa;
+  --info-soft: #12203a;
+  --info-border: #1f3a63;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 14px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.55);
 }
 
 html,
@@ -29,23 +112,88 @@ body {
 body {
   background: var(--background);
   color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.006em;
+}
+
+/* Headings get a tighter tracking so they read as a hierarchy, not a wall. */
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.021em;
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Numbers in tables and metrics line up. */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Accessible focus ring everywhere. */
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* Never remove the ring without replacing it. */
+:where(a, button, input, select, textarea, [tabindex]):focus:not(:focus-visible) {
+  outline: none;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 /* Thin, subtle scrollbars that follow the theme. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-2);
+  background-clip: content-box;
+}
+
+/* A soft grid used behind empty areas. */
+.subtle-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Respect the user's motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

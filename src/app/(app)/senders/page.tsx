@@ -440,7 +440,22 @@ function SendersInner() {
 
 export default function SendersPage() {
   return (
-    <Suspense fallback={<Skeleton className="h-64" />}>
+    // The page reads the query string, so it is rendered on the client. The
+    // fallback therefore has to carry the heading itself, otherwise the
+    // server-rendered page has no <h1> (bad for screen readers and for SEO).
+    <Suspense
+      fallback={
+        <>
+          <PageHeader
+            title="Sender accounts"
+            description="Connected inboxes used for sending."
+          />
+          <Card>
+            <Skeleton className="h-64" />
+          </Card>
+        </>
+      }
+    >
       <SendersInner />
     </Suspense>
   );

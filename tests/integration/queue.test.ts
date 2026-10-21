@@ -19,7 +19,10 @@ describe.runIf(dbEnabled)("queue claiming, recovery and ambiguity", () => {
   beforeAll(preflight);
   beforeEach(resetDatabase);
 
-  async function makeDueJobs(count: number, scheduledAt = new Date(Date.now() - 60_000)) {
+  // The jobs are scheduled well in the past so the database's clock can never
+  // make them "not due yet" (the app and the database may be a few seconds
+  // apart, and the suite runs against a remote database over a network).
+  async function makeDueJobs(count: number, scheduledAt = new Date(Date.now() - 5 * 60_000)) {
     const user = await createTestUser();
     const campaign = await createTestCampaign(user.id, { status: "ACTIVE" });
     const jobs = [];

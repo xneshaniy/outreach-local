@@ -4,8 +4,12 @@ import { SESSION_COOKIE } from "@/lib/auth/constants";
 const PUBLIC_PATHS = [
   "/login",
   "/register",
+  "/forgot-password",
+  "/reset-password",
   "/api/auth/login",
   "/api/auth/register",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
   "/api/unsubscribe",
   "/api/webhooks",
   // Liveness/readiness probe — must stay reachable by load balancers.

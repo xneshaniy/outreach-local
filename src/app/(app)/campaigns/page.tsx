@@ -147,8 +147,13 @@ export default function CampaignsPage() {
   return (
     <>
       <PageHeader
+        eyebrow={
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--muted)]">
+            {data?.total ?? 0} campaigns
+          </span>
+        }
         title="Campaigns"
-        description="Every campaign and its current state."
+        description="Every campaign and its current state. A campaign only sends once you start it."
         actions={<Button onClick={() => router.push("/campaigns/new")}>New campaign</Button>}
       />
 
@@ -235,7 +240,7 @@ export default function CampaignsPage() {
           />
         ) : (
           <>
-            <Table headers={["Name", "Service", "Status", "Recipients", "Replies", "Created", ""]}>
+            <Table headers={["Campaign", "Service", "Status", "Recipients", "Replies", "Created", ""]}>
               {items.map((c) => (
                 <tr
                   key={c.id}
