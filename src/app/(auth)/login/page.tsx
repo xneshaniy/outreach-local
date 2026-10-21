@@ -58,6 +58,14 @@ function LoginForm() {
             Create one
           </Link>
         </p>
+        <p className="text-sm text-[var(--muted)]">
+          <Link
+            href="/forgot-password"
+            className="text-[var(--accent)] underline-offset-2 hover:underline"
+          >
+            Forgot your password?
+          </Link>
+        </p>
       </form>
     </Card>
   );

@@ -28,6 +28,11 @@ function normalizeDatabaseUrl(raw: string): string {
     if (!url.searchParams.has("connect_timeout")) url.searchParams.set("connect_timeout", "60");
     if (!url.searchParams.has("pool_timeout")) url.searchParams.set("pool_timeout", "60");
     if (!url.searchParams.has("socket_timeout")) url.searchParams.set("socket_timeout", "60");
+    // Always pin the schema. A pooled connection can inherit a search_path
+    // from another session (a `migrate diff --shadow-database-url` run once
+    // left `search_path=shadow_diff` on the whole pooler), which would make
+    // every query look for its tables in the wrong schema.
+    if (!url.searchParams.has("schema")) url.searchParams.set("schema", "public");
     return url.toString();
   } catch {
     // Not a parseable URL (e.g. a unix socket path) — use it verbatim.

@@ -100,6 +100,9 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
       ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
       ...(body.trackingEnabled !== undefined ? { trackingEnabled: body.trackingEnabled } : {}),
       ...(body.clickTrackingEnabled !== undefined ? { clickTrackingEnabled: body.clickTrackingEnabled } : {}),
+      ...(body.plainTextBody !== undefined ? { plainTextBody: body.plainTextBody } : {}),
+      ...(body.signature !== undefined ? { signature: body.signature } : {}),
+      ...(body.segmentId !== undefined ? { segmentId: body.segmentId } : {}),
     },
   });
 

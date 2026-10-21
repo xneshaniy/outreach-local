@@ -31,6 +31,10 @@ may not have been sent is never blindly retried.
 - [Scheduling model](#scheduling-model)
 - [Compliance](#compliance)
 - [Client portal](#client-portal)
+- [Pipeline & CRM](#pipeline--crm)
+- [Notifications](#notifications)
+- [Campaign pre-flight](#campaign-pre-flight)
+- [Mock provider & dry run](#mock-provider--dry-run)
 - [Open & click tracking](#open--click-tracking)
 - [Tracking & provider support matrix](docs/TRACKING.md)
 - [API](#api)
@@ -111,6 +115,33 @@ may not have been sent is never blindly retried.
 - Deactivating a client or changing their password ends their sessions
   immediately.
 
+### Pipeline & CRM
+- **Configurable lead stages** (New, Researched, Contacted, Replied, Qualified,
+  Proposal, Client, Lost) with a pipeline board.
+- **Priority, owner, tags, industry, notes and source** on every contact, plus
+  a free-text note log.
+- **Tasks and reminders** with a due date, and an overdue reminder.
+- **Activity timeline** — every send, open, reply, unsubscribe, stage change
+  and note in one chronological list per contact.
+- **Prospect -> client conversion** that links the contact to the client account.
+- **Saved audience segments** (stored filters) that can be reused for campaigns.
+- **Bulk updates with a preview**: nothing is written until the operator has
+  seen exactly which contacts change.
+
+### Notifications
+- In-app notifications for **replies**, **interested prospects**, **campaign
+  completion/failure**, **provider disconnection**, **queue failures**,
+  **dead-lettered messages**, **import completion** and **configuration
+  problems**.
+- Read/unread state and the full history, in a bell in the header.
+
+### Campaign pre-flight
+- A report run before a campaign starts: missing subject/body, missing
+  unsubscribe link, placeholder or broken links, missing personalisation data,
+  ineligible recipients (and exactly why), no connected sender.
+- Blockers stop the campaign from starting; warnings and info do not.
+- It sends nothing.
+
 ### Open & click tracking
 
 > Which metrics each provider actually supports — see
@@ -165,6 +196,13 @@ may not have been sent is never blindly retried.
   lease reclamation and exponential backoff with jitter.
 - **Never-blind-retry** — a timeout *after* the provider accepted a message
   leaves the job `AMBIGUOUS` and requires reconciliation before any resend.
+- **Lead pipeline & CRM** — configurable stages, priority, tasks, notes, an
+  activity timeline, segments, bulk updates and prospect conversion.
+- **In-app notifications** — replies, failures, provider problems, imports.
+- **Pre-flight checks** — a campaign cannot start until it passes.
+- **Mock email provider** — the whole pipeline runs without credentials.
+- **Unified message status** — one vocabulary that never conflates "accepted"
+  with "delivered".
 - **Client portal** — separate client logins, explicit campaign assignment,
   server-enforced data isolation and client-specific reports.
 - **Open & click tracking** — signed tracking pixel and link rewriting, unique
@@ -391,12 +429,12 @@ npm run build:worker         # the background-worker bundle
 npm run build:deploy         # a self-contained bundle for shared hosting
 ```
 
-**Unit tests** (no database, 86 tests) cover the deterministic core: email
+**Unit tests** (no database, 110 tests) cover the deterministic core: email
 normalisation, crypto (AES-256-GCM), scheduling/DST maths, template rendering,
 CSV parsing, retry/backoff classification, personalisation coverage analysis,
 service slugs and the dry-run provider.
 
-**Integration tests** (`tests/integration/**`, 47 tests) run against a real
+**Integration tests** (`tests/integration/**`, 108 tests) run against a real
 PostgreSQL and are **opt-in**. They `TRUNCATE` every table before each test, so
 **never** point them at the application database - use a separate one:
 
@@ -507,6 +545,15 @@ src/
     tracking.ts        open/click tracking: signed tokens, pixel, bot detection
     metrics.ts         campaign performance metrics and the daily series
     portal.ts          client-portal access helpers (the single access check)
+    pipeline.ts        lead stages, conversion
+    activity.ts        the contact activity timeline and notes
+    notifications.ts   in-app notifications
+    preflight.ts       the campaign pre-flight report
+    segments.ts        saved audience filters
+    link-check.ts      static link validation (never makes a network call)
+    message-status.ts  the unified message-status vocabulary
+    provider-capabilities.ts  what each provider can and cannot report
+    email/mock.ts      the mock provider (no network)
     crypto.ts          AES-256-GCM helpers
     env.ts             validated environment
   worker/              background sender + reconciliation

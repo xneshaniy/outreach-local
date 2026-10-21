@@ -45,6 +45,12 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  // Route every send through the in-memory mock provider. Used for local
+  // development and the automated tests - it never touches the network.
+  MOCK_PROVIDER: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -107,6 +113,8 @@ export const env = {
   // Delivery ---------------------------------------------------------------
   /** When true, no email is ever handed to a provider. */
   dryRun: e.DRY_RUN,
+  /** When true, the mock provider is used instead of a real one. */
+  mockProvider: e.MOCK_PROVIDER,
 
   // Google ------------------------------------------------------------------
   googleClientId: e.GOOGLE_CLIENT_ID ?? "",

@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { handleApi, json, assertSameOrigin } from "@/lib/http";
 import { requireContact, requireUser } from "@/lib/auth/guards";
@@ -62,10 +63,50 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
       ...(body.source !== undefined ? { source: body.source } : {}),
       ...(body.notes !== undefined ? { notes: body.notes } : {}),
       ...(body.tags !== undefined ? { tags: body.tags ?? [] } : {}),
+      ...(body.industry !== undefined ? { industry: body.industry } : {}),
+      ...(body.priority !== undefined ? { priority: body.priority } : {}),
+      ...(body.stageId !== undefined ? { stageId: body.stageId } : {}),
+      ...(body.ownerId !== undefined ? { ownerId: body.ownerId } : {}),
+      ...(body.isArchived !== undefined ? { isArchived: body.isArchived } : {}),
       ...(body.consentAt !== undefined ? { consentAt: body.consentAt } : {}),
       ...(body.consentSource !== undefined ? { consentSource: body.consentSource } : {}),
-    },
+      // stageId / ownerId are relation foreign keys, so the UNCHECKED update
+      // input is used (otherwise Prisma expects the relation object form).
+    } as Prisma.ContactUncheckedUpdateInput,
   });
+
+  // The timeline records what changed, so the contact page shows the story.
+  {
+    const { recordActivity } = await import("@/lib/activity");
+    const type =
+      body.stageId !== undefined && body.stageId !== contact.stageId
+        ? "STAGE_CHANGED"
+        : body.priority !== undefined && body.priority !== contact.priority
+          ? "PRIORITY_CHANGED"
+          : body.ownerId !== undefined && body.ownerId !== contact.ownerId
+            ? "OWNER_CHANGED"
+            : "UPDATED";
+    const changed: Record<string, unknown> = {};
+    for (const key of ["stageId", "priority", "ownerId", "source", "industry", "notes", "tags"] as const) {
+      if (body[key] !== undefined) changed[key] = body[key];
+    }
+    if (Object.keys(changed).length > 0) {
+      await recordActivity({
+        userId: user.id,
+        contactId: contact.id,
+        type,
+        summary:
+          type === "STAGE_CHANGED"
+            ? "Stage changed"
+            : type === "PRIORITY_CHANGED"
+              ? "Priority changed"
+              : type === "OWNER_CHANGED"
+                ? "Owner changed"
+                : "Contact updated",
+        detail: { changes: changed },
+      });
+    }
+  }
 
   // Marking a contact as unsubscribed must stop every pending message.
   if (updated.status === "UNSUBSCRIBED" || updated.status === "INVALID") {

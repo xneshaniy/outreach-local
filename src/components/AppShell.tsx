@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { NotificationBell } from "./NotificationBell";
 
 /**
  * Authenticated app shell: sidebar navigation, user menu, theme toggle.
@@ -18,6 +19,7 @@ const NAV = [
   { href: "/templates", label: "Templates", icon: "✎" },
   { href: "/follow-ups", label: "Follow-ups", icon: "↻" },
   { href: "/replies", label: "Replies", icon: "↩" },
+  { href: "/pipeline", label: "Pipeline", icon: "▥" },
   { href: "/clients", label: "Clients", icon: "◫" },
   { href: "/queue", label: "Send queue", icon: "⇄" },
   { href: "/analytics", label: "Analytics", icon: "▤" },
@@ -106,6 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="truncate px-2 text-xs text-[var(--muted)]">{email ?? "…"}</p>
           <div className="mt-2 flex items-center gap-2 px-2">
             <ThemeToggle />
+            <NotificationBell />
             <button
               onClick={logout}
               className="rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-sm text-red-600 hover:bg-red-500/10 dark:text-red-400"
@@ -124,6 +127,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ☰
           </button>
           <span className="text-sm font-semibold">Email Outreach</span>
+          <div className="ml-auto">
+            <NotificationBell />
+          </div>
         </header>
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
       </div>

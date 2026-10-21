@@ -126,6 +126,17 @@ export async function POST(req: NextRequest) {
       });
     });
 
+    {
+      const { recordActivity } = await import("@/lib/activity");
+      await recordActivity({
+        userId,
+        contactId: contact.id,
+        type: "UNSUBSCRIBED",
+        summary: "Unsubscribed",
+        detail: { reason: reason ?? null },
+      });
+    }
+
     await audit(prisma, {
       userId,
       action: "contact.unsubscribe",

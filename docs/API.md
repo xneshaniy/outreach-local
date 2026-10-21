@@ -1012,3 +1012,105 @@ The tracked link redirect.
 
 The dedupe key is set only on the FIRST event of its kind, so repeated opens
 and clicks are still counted in the total but never inflate the unique count.
+
+---
+
+## Pipeline, CRM and notifications — `/api/pipeline/*`, `/api/tasks`, `/api/notifications`
+
+### `GET|POST /api/pipeline/stages`
+Lists (and creates) the configurable lead stages. The default stages are created
+on the first call.
+
+### `PATCH|DELETE /api/pipeline/stages/:id`
+Renames, recolours, reorders or deletes a stage. Deleting a stage leaves its
+contacts in place (the link is removed, the contact is not deleted).
+
+### `GET|POST /api/tasks`
+Lists the tasks (reminders) and creates one. A task can be linked to a contact
+and a campaign, and can have a due date. An already-overdue task raises a
+notification.
+
+### `PATCH|DELETE /api/tasks/:id`
+Edits, completes or deletes a task. Completing a task writes an entry to the
+contact's timeline.
+
+### `GET|PATCH /api/notifications`
+Lists the notifications and marks them read. `PATCH { ids: [...] }` marks the
+given ones, `PATCH { all: true }` marks them all.
+
+### `GET|POST /api/contacts/:id/activity`
+The contact's timeline, and adding a note to it.
+
+### `POST /api/contacts/bulk`
+Bulk updates, in two steps.
+
+```
+POST { "mode": "preview", "ids": ["ct1"], "changes": { "stageId": "ls1", "addTags": ["saas"] } }
+POST { "mode": "apply",   "ids": ["ct1"], "changes": { "stageId": "ls1", "addTags": ["saas"] } }
+```
+
+The preview reports which contacts would change and how; nothing is written
+until the apply step. Contacts outside the workspace are never touched.
+
+---
+
+## Segments — `/api/segments`
+
+A segment is a saved filter over the contact list.
+
+```json
+{
+  "name": "SaaS leads that replied",
+  "filters": {
+    "status": ["REPLIED"],
+    "tags": ["saas"],
+    "hasTimeZone": true,
+    "consentedOnly": true
+  }
+}
+```
+
+Only the known filter keys are read (`status`, `source`, `tags`, `stageId`,
+`priority`, `industry`, `hasTimeZone`, `consentedOnly`, `neverSent`,
+`search`), so a malformed filter can never become an arbitrary query.
+
+### `GET|POST /api/segments`, `PATCH|DELETE /api/segments/:id`
+
+---
+
+## Campaign pre-flight — `GET /api/campaigns/:id/preflight`
+
+The report run before a campaign starts. It never sends anything.
+
+```json
+{
+  "report": {
+    "ok": false,
+    "findings": [
+      { "severity": "BLOCKER", "code": "NO_UNSUBSCRIBE", "message": "The message has no unsubscribe link." }
+    ],
+    "eligible": 120,
+    "excluded": 8,
+    "excludedReasons": { "UNKNOWN_TIMEZONE": 8 },
+    "personalization": { "variables": ["first_name"], "missing": [], "partial": [], "checked": 128 },
+    "providerCapabilities": { "reportsDelivery": false, "reportsReplies": true }
+  }
+}
+```
+
+Severities: `BLOCKER` (the campaign must not start), `WARNING`, `INFO`.
+
+---
+
+## Dead-letter retry — `POST /api/jobs/:id/retry`
+
+Puts a **failed** job back in the queue. A job whose outcome is uncertain
+(`AMBIGUOUS`) is refused with 400 — retrying it could send the same message
+twice, so it must be reconciled instead.
+
+---
+
+## Mock provider — `GET|DELETE /api/senders/mock`
+
+The messages the mock provider accepted, and clearing them. The mock provider
+never touches the network; enable it with `MOCK_PROVIDER=true`.

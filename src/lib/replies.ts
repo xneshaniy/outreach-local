@@ -103,6 +103,26 @@ export async function recordReply(input: {
 
     if (match.contactId) {
       await applyReplyToContact(input.userId, match.contactId);
+
+      // The timeline and the notification bell both learn about the reply.
+      const { recordActivity } = await import("./activity");
+      const { notify } = await import("./notifications");
+      await recordActivity({
+        userId: input.userId,
+        contactId: match.contactId,
+        type: "REPLIED",
+        summary: "Replied: " + (input.subject || "(no subject)"),
+        detail: { replyId: reply.id, campaignId: match.campaignId },
+      });
+      await notify({
+        userId: input.userId,
+        type: "REPLY",
+        title: "Reply from " + input.fromEmail,
+        body: input.subject ?? null,
+        link: "/replies",
+        entityType: "Reply",
+        entityId: reply.id,
+      });
     }
     return { created: true, replyId: reply.id, contactId: match.contactId };
   } catch (err) {

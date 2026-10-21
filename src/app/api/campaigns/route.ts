@@ -100,6 +100,9 @@ export const POST = handleApi(async (req: NextRequest) => {
       dryRun: body.dryRun,
       trackingEnabled: body.trackingEnabled,
       clickTrackingEnabled: body.clickTrackingEnabled,
+      plainTextBody: body.plainTextBody ?? null,
+      signature: body.signature ?? null,
+      segmentId: body.segmentId ?? null,
     },
   });
 

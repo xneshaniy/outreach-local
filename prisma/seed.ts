@@ -85,6 +85,11 @@ async function main() {
   const services = await ensureStarterServices(user.id);
   console.log(`✓ ${services.length} service profiles`);
 
+  // --- Lead pipeline stages -------------------------------------------------
+  const { ensureDefaultStages } = await import("../src/lib/pipeline");
+  const stages = await ensureDefaultStages(user.id);
+  console.log(`✓ ${stages.length} lead pipeline stages`);
+
   // --- Contacts -------------------------------------------------------------
   const contacts = [];
   for (const c of CONTACTS) {

@@ -59,6 +59,11 @@ const campaignBody = z.object({
   // Opt-in tracking. Both default to OFF so nothing is tracked silently.
   trackingEnabled: z.boolean().default(false),
   clickTrackingEnabled: z.boolean().default(false),
+  // Plain-text alternative and the signature.
+  plainTextBody: z.string().max(200_000).nullish(),
+  signature: z.string().max(20_000).nullish(),
+  // A saved audience segment.
+  segmentId: z.string().cuid().nullish(),
 });
 
 export const campaignCreateSchema = campaignBody.superRefine((v, ctx) => {
@@ -119,6 +124,11 @@ export const contactCreateSchema = z.object({
   source: z.string().max(200).nullish(),
   notes: z.string().max(5000).nullish(),
   tags: z.array(z.string().min(1).max(60)).max(50).nullish(),
+  industry: z.string().max(200).nullish(),
+  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).nullish(),
+  stageId: z.string().cuid().nullish(),
+  ownerId: z.string().cuid().nullish(),
+  isArchived: z.boolean().nullish(),
   consentAt: z.coerce.date().nullish(),
   consentSource: z.string().max(200).nullish(),
 });
@@ -142,6 +152,12 @@ export const templateSchema = z.object({
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(200_000),
   description: z.string().max(1000).nullish(),
+  category: z
+    .enum(["OUTREACH", "FOLLOW_UP", "INTERESTED", "MEETING", "PROPOSAL", "ONBOARDING", "CUSTOM"])
+    .default("OUTREACH"),
+  plainTextBody: z.string().max(200_000).nullish(),
+  signature: z.string().max(20_000).nullish(),
+  serviceId: z.string().cuid().nullish(),
 });
 
 // ---------------------------------------------------------------------------

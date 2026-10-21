@@ -18,7 +18,10 @@ import { unsubscribeUrl } from "../lib/template";
 import { gmailProvider } from "../lib/email/gmail";
 import { smtpProvider } from "../lib/email/smtp";
 import { dryRunProvider } from "../lib/email/dry-run";
+import { mockProvider } from "../lib/email/mock";
 import { advanceFollowUp } from "../lib/followup";
+import { recordActivity } from "../lib/activity";
+import { notify } from "../lib/notifications";
 import type { ClaimedJob } from "../lib/queue";
 import type { EmailProvider, SendInput } from "../lib/email/provider";
 
@@ -194,7 +197,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     orderBy: [{ lastUsedAt: "asc" }, { createdAt: "asc" }],
     take: 10,
   });
-  if (accounts.length === 0 && !isDryRun) {
+  if (accounts.length === 0 && !isDryRun && !env.mockProvider) {
     await failAttempt(job, attempt.id, attemptNumber, "NO_SENDER", "No connected sender account.", "permanent", Date.now() - started);
     return;
   }
@@ -202,7 +205,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   let reservedFor: (typeof accounts)[number] | null = null;
   let lastQuotaError: Error | null = null;
 
-  if (!isDryRun) {
+  if (!isDryRun && !env.mockProvider) {
     for (const account of accounts) {
       const cap = Math.min(account.dailyCap, env.senderDailyCapDefault);
       try {
@@ -300,7 +303,13 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     );
   }
 
-  const provider = isDryRun ? dryRunProvider : providerFor(reservedFor!);
+  // The mock provider is checked first so a developer with no credentials
+  // can still exercise the whole pipeline.
+  const provider = isDryRun
+    ? dryRunProvider
+    : env.mockProvider
+      ? mockProvider
+      : providerFor(reservedFor!);
   let outcome;
   try {
     outcome = await provider.send(reservedFor!, sendInput);
@@ -317,8 +326,8 @@ export async function processJob(job: ClaimedJob): Promise<void> {
   if (outcome.kind === "ok") {
     const sentAt = new Date();
     await prisma.$transaction(async (tx: TxLike) => {
-      if (!isDryRun) {
-        await settleSenderSlot(tx, reservedFor!.id, quotaDay);
+      if (!isDryRun && !env.mockProvider && reservedFor) {
+        await settleSenderSlot(tx, reservedFor.id, quotaDay);
       }
       await tx.sendAttempt.update({
         where: { id: attempt.id },
@@ -359,6 +368,16 @@ export async function processJob(job: ClaimedJob): Promise<void> {
         });
       }
     });
+    if (!isDryRun) {
+      await recordActivity({
+        userId: job.userId,
+        contactId: job.contactId,
+        type: "EMAIL_SENT",
+        summary: "Email sent: " + rendered.subject,
+        detail: { jobId: job.id, campaignId: job.campaignId },
+      });
+    }
+
     logger.info(isDryRun ? "Job rendered (dry run)" : "Job sent", {
       jobId: job.id,
       provider: provider.name,
@@ -467,7 +486,14 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     });
     await tx.sendJob.update({
       where: { id: job.id },
-      data: { status: "FAILED", attempts: attemptNumber, lastError: outcome.message, errorCode: outcome.code },
+      data: {
+        status: "FAILED",
+        attempts: attemptNumber,
+        lastError: outcome.message,
+        errorCode: outcome.code,
+        // A permanent failure is moved out of the queue for manual review.
+        deadLetteredAt: new Date(),
+      },
     });
     if (recipient) {
       await tx.campaignRecipient.update({
@@ -483,6 +509,25 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     }
   });
   logger.warn("Permanent send failure", { jobId: job.id, code: outcome.code });
+
+  // The message is now dead-lettered: it is out of the queue and needs a
+  // human decision (fix the address, retry, or drop it).
+  await recordActivity({
+    userId: job.userId,
+    contactId: job.contactId,
+    type: "BOUNCED",
+    summary: "Send failed permanently: " + outcome.message,
+    detail: { jobId: job.id, code: outcome.code },
+  });
+  await notify({
+    userId: job.userId,
+    type: "DEAD_LETTER",
+    title: "A message to " + job.contact.email + " failed permanently",
+    body: outcome.message,
+    link: "/queue",
+    entityType: "SendJob",
+    entityId: job.id,
+  });
 }
 
 // ---------------------------------------------------------------------------

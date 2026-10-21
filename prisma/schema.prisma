@@ -153,6 +153,82 @@ enum TrackingSource {
 }
 
 // ---------------------------------------------------------------------------
+// The single vocabulary used for reporting, the queue UI and the client
+// portal. "ACCEPTED" means the provider took the message; "DELIVERED" only
+// ever means a delivery event confirmed it. They are never conflated.
+// ---------------------------------------------------------------------------
+enum MessageStatus {
+  DRAFT // not queued yet
+  QUEUED // in the database queue
+  SCHEDULED // queued for a future instant
+  PROCESSING // claimed by a worker
+  ACCEPTED // the provider accepted the message
+  DELIVERED // a delivery event confirmed it
+  BOUNCED // the address hard-bounced
+  FAILED // the send failed permanently
+  CANCELLED // stopped before sending
+  REPLIED // the contact replied
+  UNSUBSCRIBED // the contact opted out
+  SKIPPED // ineligible (suppressed, held, frequency limit, ...)
+}
+
+enum NotificationType {
+  REPLY // a reply arrived
+  INTERESTED // a reply was classified as interested
+  CAMPAIGN_COMPLETED
+  CAMPAIGN_FAILED
+  PROVIDER_DISCONNECTED // a sender account needs attention
+  QUEUE_FAILURE // jobs failed permanently
+  IMPORT_COMPLETED
+  CONFIG_PROBLEM // the configuration is incomplete or wrong
+  TASK_DUE // a follow-up task is due
+  DEAD_LETTER // a job was moved to the dead-letter state
+  SYSTEM
+}
+
+enum ContactActivityType {
+  CREATED
+  IMPORTED
+  UPDATED
+  EMAIL_SENT
+  EMAIL_OPENED
+  EMAIL_CLICKED
+  REPLIED
+  UNSUBSCRIBED
+  BOUNCED
+  SUPPRESSED
+  STAGE_CHANGED
+  PRIORITY_CHANGED
+  OWNER_CHANGED
+  NOTE_ADDED
+  TASK_COMPLETED
+  CONVERTED
+}
+
+enum TaskStatus {
+  OPEN
+  DONE
+  CANCELLED
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TemplateCategory {
+  OUTREACH // first contact
+  FOLLOW_UP
+  INTERESTED // a reply to an interested prospect
+  MEETING // meeting request
+  PROPOSAL // proposal follow-up
+  ONBOARDING // client onboarding
+  CUSTOM
+}
+
+// ---------------------------------------------------------------------------
 // Core models
 // ---------------------------------------------------------------------------
 
@@ -183,6 +259,14 @@ model User {
   followUpMessages  FollowUpMessage[]
   replies           Reply[]
   clients           Client[]
+  ownedContacts     Contact[] @relation("ContactOwner")
+  leadStages        LeadStage[]
+  notifications     Notification[]
+  activities        ContactActivity[]
+  tasks             Task[]
+  campaignSegments  CampaignSegment[]
+  contactNotes      ContactNote[]
+  passwordResets    PasswordResetToken[]
 }
 
 model SenderAccount {
@@ -238,12 +322,23 @@ model EmailTemplate {
   // template set per business line).
   serviceId   String?
   service     Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  // What the template is for.
+  category    TemplateCategory @default(OUTREACH)
+  // Incremented on every edit; the previous contents are kept in TemplateVersion.
+  version     Int      @default(1)
+  // Plain-text alternative (good practice, and required by some providers).
+  plainTextBody String?
+  // The signature appended to outgoing mail.
+  signature   String?
+  isArchived  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   campaigns Campaign[]
+  versions  TemplateVersion[]
 
   @@index([userId, serviceId])
+  @@index([userId, category])
 }
 
 // ---------------------------------------------------------------------------
@@ -264,8 +359,14 @@ model Service {
   defaultSubject        String?
   defaultBody           String?
   defaultCta            String?
+  // The value the service delivers, in the client's own words.
+  valueProposition     String?
+  // What a prospect must look like to be a fit (free text).
+  qualificationCriteria String?
   color                 String   @default("#6366f1")
   isActive              Boolean  @default(true)
+  // Archived services are hidden from pickers but keep their history.
+  isArchived            Boolean  @default(false)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -300,6 +401,20 @@ model Contact {
   notes           String?
   // Labels for segmentation ("saas", "agency", "high-value", ...).
   tags            String[]      @default([])
+  // Industry of the contact's company.
+  industry        String?
+  // Pipeline stage and priority.
+  stageId         String?
+  stage           LeadStage?    @relation(fields: [stageId], references: [id], onDelete: SetNull)
+  priority        LeadPriority  @default(MEDIUM)
+  // The operator responsible for this lead (multi-user workspaces).
+  ownerId         String?
+  owner           User?         @relation("ContactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  // Set when the prospect becomes a paying client.
+  convertedAt     DateTime?
+  convertedToClientId String?
+  // Archived contacts are excluded from new targeting but keep their history.
+  isArchived      Boolean       @default(false)
   status          ContactStatus @default(ACTIVE)
   // Lawful basis / consent tracking.
   consentAt      DateTime?
@@ -318,6 +433,9 @@ model Contact {
   followUpMessages   FollowUpMessage[]
   replies            Reply[]
   trackingEvents     TrackingEvent[]
+  activities         ContactActivity[]
+  tasks              Task[]
+  contactNotes       ContactNote[] @relation("contactNotes")
 
   // One contact per user per normalized email — enforced by the database.
   @@unique([userId, emailNormalized])
@@ -355,6 +473,16 @@ model Campaign {
   // Dry run: the worker renders the message and marks it delivered WITHOUT
   // contacting the provider. Used to validate configuration before going live.
   dryRun Boolean @default(false)
+
+  // Plain-text alternative of the body.
+  plainTextBody String?
+  // The signature appended to outgoing mail.
+  signature String?
+  // Reusable audience filter.
+  segmentId String?
+  segment   CampaignSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  // When the pre-flight checks last passed.
+  preflightCheckedAt DateTime?
 
   // --- Tracking (opt-in per campaign) -------------------------------------
   // Open tracking adds a 1x1 tracking pixel to the message body.
@@ -398,6 +526,7 @@ model Campaign {
   replies          Reply[]
   clientAccess     ClientCampaignAccess[]
   trackingEvents   TrackingEvent[]
+  tasks            Task[]
 
   @@index([userId, status])
   @@index([status])
@@ -480,6 +609,9 @@ model SendJob {
   deliveredAt DateTime?
   // Dry run: the message was rendered but never handed to a provider.
   dryRun Boolean @default(false)
+  // Set when the job was moved to the dead-letter state (permanently failed
+  // and moved out of the queue for manual review).
+  deadLetteredAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -750,6 +882,175 @@ model FollowUpMessage {
 // campaign (by the most recent message we sent to that contact). A reply
 // automatically stops the follow-up sequence for that contact.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// In-app notifications
+//
+// Created by the worker and the API when something needs the operator's
+// attention. Read/unread state and the full history are kept.
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id         String           @id @default(cuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       NotificationType
+  title      String
+  body       String?
+  // Where to go when the notification is clicked (an in-app path).
+  link       String?
+  entityType String?
+  entityId   String?
+  isRead     Boolean          @default(false)
+  readAt     DateTime?
+  createdAt  DateTime         @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Contact activity timeline
+//
+// Every meaningful thing that happened to a contact, in one list.
+// ---------------------------------------------------------------------------
+
+model ContactActivity {
+  id        String            @id @default(cuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  type      ContactActivityType
+  summary   String
+  detail    Json?
+  createdAt DateTime          @default(now())
+
+  @@index([contactId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Notes on a contact.
+// ---------------------------------------------------------------------------
+
+model ContactNote {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact  @relation("contactNotes", fields: [contactId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([contactId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Tasks / reminders
+// ---------------------------------------------------------------------------
+
+model Task {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactId String?
+  contact   Contact?   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaignId String?
+  campaign  Campaign?  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  title     String
+  notes     String?
+  status    TaskStatus @default(OPEN)
+  dueAt     DateTime?
+  completedAt DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, dueAt])
+  @@index([contactId])
+}
+
+// ---------------------------------------------------------------------------
+// Configurable lead pipeline stages
+// ---------------------------------------------------------------------------
+
+model LeadStage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  order     Int      @default(0)
+  color     String   @default("#6366f1")
+  // The stage new contacts start in.
+  isDefault Boolean  @default(false)
+  // A stage that means "this is a customer".
+  isWon     Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts Contact[]
+
+  @@unique([userId, name])
+  @@index([userId, order])
+}
+
+// ---------------------------------------------------------------------------
+// Reusable campaign segments (saved audience filters).
+// ---------------------------------------------------------------------------
+
+model CampaignSegment {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  // The filter, stored as JSON: { status?, source?, tags?, stageId?, priority?, ... }
+  filters     Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns Campaign[]
+
+  @@unique([userId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Template change history
+// ---------------------------------------------------------------------------
+
+model TemplateVersion {
+  id            String       @id @default(cuid())
+  templateId    String
+  template      EmailTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  version       Int
+  subject       String
+  body          String
+  plainTextBody String?
+  createdAt     DateTime     @default(now())
+
+  @@unique([templateId, version])
+  @@index([templateId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Password reset
+//
+// Only the SHA-256 hash of the token is stored, and it is single-use.
+// ---------------------------------------------------------------------------
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
 
 model Reply {
   id              String   @id @default(cuid())

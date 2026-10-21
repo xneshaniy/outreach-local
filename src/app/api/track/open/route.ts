@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
     // recipient that really belongs to it.
     const campaign = await prisma.campaign.findFirst({
       where: { id: campaignId, trackingEnabled: true },
-      select: { id: true },
+      select: { id: true, userId: true },
     });
     if (!campaign) return pixelResponse();
 
@@ -53,6 +53,7 @@ export async function GET(req: NextRequest) {
     // opens are still counted in the total but do not inflate the unique
     // count. A unique-index conflict simply means "already counted".
     const dedupeKey = buildDedupeKey("OPEN", campaignId, contactId);
+    let firstOpen = false;
     try {
       await prisma.trackingEvent.create({
         data: {
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
           ipAddress: clientIp(req),
         },
       });
+      firstOpen = true;
     } catch (err) {
       if ((err as { code?: string })?.code !== "P2002") {
         logger.warn("Could not record an open event", { error: (err as Error).message });
@@ -86,6 +88,18 @@ export async function GET(req: NextRequest) {
           })
           .catch(() => undefined);
       }
+    }
+    // The timeline records the FIRST open of a message (and only a
+    // human one - a scanner fetch is not an engagement).
+    if (firstOpen && source !== "BOT") {
+      const { recordActivity } = await import("@/lib/activity");
+      await recordActivity({
+        userId: campaign.userId,
+        contactId,
+        type: "EMAIL_OPENED",
+        summary: "Opened the email",
+        detail: { campaignId, source },
+      });
     }
   } catch (err) {
     logger.warn("Tracking pixel failed", { error: (err as Error).message });
