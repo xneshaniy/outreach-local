@@ -29,9 +29,9 @@ const eslintConfig = [
     },
   },
   {
-    // Deployment templates are copied verbatim into the deploy bundle and run
-    // as plain CommonJS scripts on the server (not part of the Next.js app).
-    files: ["scripts/templates/**/*.{js,cjs}"],
+    // Deployment and maintenance scripts are plain CommonJS programs that
+    // run on the server or in a terminal - not part of the Next.js app.
+    files: ["scripts/**/*.{js,cjs}", "scripts/templates/**/*.{js,cjs}"],
     languageOptions: {
       sourceType: "commonjs",
       globals: {
@@ -41,6 +41,8 @@ const eslintConfig = [
         require: "readonly",
         module: "writable",
         setTimeout: "readonly",
+        Buffer: "readonly",
+        URL: "readonly",
       },
     },
     rules: {

@@ -113,7 +113,7 @@ Hostinger reads the keys from `.env.example` and asks for each value.
 | Key | Value |
 | --- | --- |
 | `DATABASE_URL` | `postgresql://postgres.rkxohuoiggoxgpbcgoda:YOUR_PASSWORD@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres?schema=public&sslmode=require&connect_timeout=60&pool_timeout=60` |
-| `APP_URL` | `https://silver-sparrow-530238.hostingersite.com` *(see A4)* |
+| `APP_URL` | `https://ghostwhite-parrot-522091.hostingersite.com` *(see A4)* |
 | `NODE_ENV` | `production` |
 | `AUTH_SECRET` | *your existing value* — see below |
 | `ENCRYPTION_KEY` | *your existing value* — see below |
@@ -125,7 +125,7 @@ Hostinger reads the keys from `.env.example` and asks for each value.
 | `RATE_LIMIT_API_WINDOW_SECONDS` | `60` |
 | `GOOGLE_CLIENT_ID` | your Google OAuth client id (or leave empty) |
 | `GOOGLE_CLIENT_SECRET` | your Google OAuth client secret (or leave empty) |
-| `GOOGLE_REDIRECT_URI` | `https://silver-sparrow-530238.hostingersite.com/api/google/callback` *(see A4)* |
+| `GOOGLE_REDIRECT_URI` | `https://ghostwhite-parrot-522091.hostingersite.com/api/google/callback` *(see A4)* |
 | `GOOGLE_SCOPES` | `https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile` |
 | `DRY_RUN` | `true` *(keep it on until everything is verified — see A6)* |
 | `MOCK_PROVIDER` | `false` |
@@ -183,14 +183,40 @@ live. A successful build ends with:
 ## A5. Apply the database migrations
 
 The build does **not** run migrations (a database outage should never fail a
-deploy). Do it once over SSH.
+deploy), and the Supabase project starts out **completely empty** — no tables
+at all.
 
-Hostinger clones the repository somewhere under your domain folder, and the
-exact path depends on how you set up the app. Find it instead of guessing:
+### The easy way: the Supabase SQL Editor (no password needed)
+
+Supabase → your project → **SQL Editor** → **New query**. Paste the contents
+of `scripts/supabase-bootstrap.sql` and press **Run**.
+
+That file is generated from the committed migrations, so it can never drift
+from them:
+
+```bash
+npm run db:bootstrap        # writes scripts/supabase-bootstrap.sql
+```
+
+It creates the whole schema **and** records the migrations in
+`_prisma_migrations` with the exact checksums Prisma uses, so a later
+`npx prisma migrate deploy` reports *"No pending migrations to apply"*
+instead of trying to apply them a second time.
+
+This was verified end to end: the script was applied to an empty database and
+`prisma migrate deploy` then reported no pending migrations, with the
+columns, indexes, enums and migration records identical to a database built
+by `prisma migrate deploy`.
+
+### The alternative: the database password over SSH
+
+If you would rather use the normal workflow, find the database password
+(Supabase → your project → **Settings → Database → Database password**) and
+run:
 
 ```bash
 source ~/.nvm/nvm.sh && nvm use 22
-find ~/domains -maxdepth 4 -type d -name prisma -path "*prisma" 2>/dev/null
+find ~/domains -maxdepth 4 -type d -name prisma 2>/dev/null
 ```
 
 That prints the directory that holds `schema.prisma` and `migrations/`.
@@ -221,10 +247,19 @@ Your database is now in sync with your Prisma schema.
 > when idle and the app retries transient connection errors, but the timeout
 > is what turns a cold start into a fast one.
 
+### The Supabase CLI
+
+```bash
+supabase login
+supabase init
+supabase link --project-ref rkxohuoiggoxgpbcgoda
+supabase db push
+```
+
 ### Supabase specifics
 
-**Your project.** Project ref `rkxohuoiggoxgpbcgoda`, region `ap-northeast-1`.
-Use the **session pooler**, not the direct host:
+**Your project.** Project ref `rkxohuoiggoxgpbcgoda`, region `ap-northeast-1`
+(Northeast Asia / Tokyo). Use the **session pooler**, not the direct host:
 
 | Supabase option | Host | Use it? |
 | --- | --- | --- |
@@ -235,32 +270,16 @@ Use the **session pooler**, not the direct host:
 The direct host has **no IPv4 address** — it resolves to an IPv6 address only.
 Shared hosting is IPv4, so the direct host cannot be used.
 
-The **database password** is not the API key. It is in Supabase → your project
+The **database password** is not an API key. It is in Supabase → your project
 → **Settings → Database → Database password** (or press "Reset database
-password" to set a new one). The `sb_publishable_…` key is the public API
-key; this application does not need it, because it talks to PostgreSQL
-directly.
+password" to set a new one).
 
-**Row Level Security.** Supabase enables RLS on tables created in the
-dashboard. The application connects as the table owner, which bypasses RLS,
-so the tables created by `prisma migrate deploy` work as they are. Just do
-not turn on "Force RLS" — that applies policies to the owner too and breaks
-every query.
-
-**Connection limit.** Supabase caps how many direct connections a project can
-open. The session pooler multiplexes them, so a single Node app is well
-inside the limit. If you ever scale the app out, add
-`&connection_limit=5` to the URL.
-
-**Applying the migrations with the Supabase CLI** (an alternative to the
-password step — it authenticates with your access token instead):
-
-```bash
-supabase login
-supabase init
-supabase link --project-ref rkxohuoiggoxgpbcgoda
-supabase db push
-```
+**The API keys are not used by this application.** `sb_publishable_…` is the
+public browser key and `sb_secret_…` is the server-side key; they
+authenticate to the Supabase REST/Auth API. This app talks to PostgreSQL
+directly through Prisma, so it needs neither — and it deliberately does not
+ship a browser-side Supabase client, because that would expose the database
+to anyone holding the publishable key.
 
 ## A6. Verify
 

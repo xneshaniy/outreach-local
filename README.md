@@ -606,6 +606,9 @@ scripts/
   build-deploy.mjs     self-contained bundle for shared hosting
   build-on-host.sh     build on the target server (correct native binaries)
   export-postgres-dump.mjs  portable SQL dump of the live database
+  generate-supabase-bootstrap.mjs  SQL script that builds the schema in the
+                         Supabase SQL Editor (no database password needed)
+  verify-supabase-bootstrap.cjs  proves that script matches `migrate deploy`
   simulate-hostinger.ps1  verify the bundle starts in every hosting layout
 tests/
   unit/                no-database unit tests
