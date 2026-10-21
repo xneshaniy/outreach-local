@@ -26,15 +26,18 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-c
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# `next build` evaluates the app's route modules, and src/lib/env.ts refuses to
-# start in production without AUTH_SECRET / ENCRYPTION_KEY. These are
-# build-time placeholders only - the real values are injected at RUNTIME.
+# `next build` evaluates the app's route modules, but it must not need the
+# production secrets: a hosting platform applies them to the running app, not
+# to the build step. src/lib/env.ts therefore uses a placeholder while
+# NEXT_PHASE=phase-production-build, and the real values are injected at
+# RUNTIME - where a missing secret still fails fast.
+#
+# DATABASE_URL is still needed here: the Prisma client's postinstall runs
+# `prisma generate`, and it only needs a URL it can parse.
 ENV NEXT_TELEMETRY_DISABLED=1 \
     DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public" \
-    AUTH_SECRET="build-time-placeholder-secret-not-used-at-runtime-000" \
-    ENCRYPTION_KEY="MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" \
     APP_URL="http://localhost:3000"
-RUN npx prisma generate && npm run build && npm run build:worker
+RUN npx prisma generate && npm run build
 
 # ---------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS runner

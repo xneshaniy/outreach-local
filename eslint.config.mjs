@@ -31,7 +31,7 @@ const eslintConfig = [
   {
     // Deployment and maintenance scripts are plain CommonJS programs that
     // run on the server or in a terminal - not part of the Next.js app.
-    files: ["scripts/**/*.{js,cjs}", "scripts/templates/**/*.{js,cjs}", "start.js"],
+    files: ["scripts/**/*.{js,cjs}", "scripts/templates/**/*.{js,cjs}", "start.js", "server.js"],
     languageOptions: {
       sourceType: "commonjs",
       globals: {

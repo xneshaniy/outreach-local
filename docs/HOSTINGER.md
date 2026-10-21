@@ -106,6 +106,7 @@ So any of these entry points work:
 | Entry file | Start command |
 | --- | --- |
 | `start.js` | `node start.js` |
+| `server.js` | `node server.js` |
 | `deploy/start.js` | `node deploy/start.js` |
 | `server/server.js` | `node server/server.js` (web app only) |
 

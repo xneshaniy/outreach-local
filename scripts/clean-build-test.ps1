@@ -2,18 +2,31 @@ $ErrorActionPreference = "Continue"
 $env:Path = "$env:LOCALAPPDATA\Programs\nodejs\node-v22.23.3-win-x64;$env:Path"
 
 $projectRoot = "C:\Users\Haseeb\Desktop\outrach system"
-$work = Join-Path $env:TEMP "opencode\cleanbuild"
+# A unique directory per run: Windows can hold file handles for a moment after
+# a process exits, and a half-removed directory makes the clone fail.
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$work = Join-Path $env:TEMP "opencode\cleanbuild-$stamp"
 
-Write-Host "==> Removing any previous clean build" -ForegroundColor Cyan
-Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "==> Preparing $work" -ForegroundColor Cyan
+if (Test-Path $work) {
+    for ($i = 0; $i -lt 5 -and (Test-Path $work); $i++) {
+        Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $work) { Start-Sleep -Seconds 2 }
+    }
+}
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 Write-Host "==> Cloning the repository (exactly what the hosting platform does)" -ForegroundColor Cyan
 Push-Location $work
-& git clone --depth 1 "file:///$($projectRoot -replace '\\','/')" repo 2>&1 | Out-Null
+$cloneOutput = & git clone --depth 1 "file:///$($projectRoot -replace '\\','/')" repo 2>&1
+$cloneExit = $LASTEXITCODE
 Pop-Location
 
-if (-not (Test-Path "$work\repo")) { Write-Host "CLONE FAILED" -ForegroundColor Red; exit 1 }
+if ($cloneExit -ne 0 -or -not (Test-Path "$work\repo\.git")) {
+    Write-Host "CLONE FAILED:" -ForegroundColor Red
+    $cloneOutput | ForEach-Object { Write-Host "    $_" }
+    exit 1
+}
 Push-Location "$work\repo"
 Write-Host "    commit: $(& git log --oneline -1)"
 
