@@ -643,15 +643,28 @@ scripts/
   build-on-host.mjs     build on the target server (correct native binaries)
   build-on-host.sh      the same, as a shell wrapper
   check-secrets.cjs     fail if a tracked file contains a secret
+  check-log-leaks.cjs   fail if a logger call can write a credential
+  check-encoding.cjs    find encoding damage in the source
   check-omit-dev.cjs    what a production-only install leaves out
+  check-input-validation.cjs  malformed input must be a 4xx, never a 5xx
   clean-build-test.ps1  clone, install, build and start, exactly like a host
   simulate-hosting-install.cjs  the hosting panel's case: a production-only
                          install followed by the build
+  simulate-hostinger.ps1  verify the bundle starts in every hosting layout
+  validate-all.mjs      the whole gate in one command
+  production-safety-check.cjs  unauthorised access, forged tokens, CSRF, dry run
+  e2e-supabase-check.cjs  health, login and API smoke test
   export-postgres-dump.mjs  portable SQL dump of the live database
   generate-supabase-bootstrap.mjs  SQL script that builds the schema in the
                          Supabase SQL Editor (no database password needed)
   verify-supabase-bootstrap.cjs  proves that script matches `migrate deploy`
-  simulate-hostinger.ps1  verify the bundle starts in every hosting layout
+  provision-supabase.mjs  set the database password, find the pooler format
+  set-db-password.mjs   set the database password to a given value
+  seed-supabase.mjs     migrate and seed the demo workspace
+  audit-supabase-schema.mjs  what the database actually contains
+  verify-supabase-schema.mjs  check it against the Prisma schema
+  rotate-app-secrets.mjs  rotate AUTH_SECRET / ENCRYPTION_KEY safely
+  diagnose-hostinger-mcp.mjs  why the Hostinger MCP is refusing to talk
 tests/
   unit/                no-database unit tests
   integration/         opt-in, real-PostgreSQL tests
