@@ -1,0 +1,45 @@
+fix: never write a credential to the log, and add the deployment tooling
+
+Security
+- The password-reset route logged the whole reset URL, which contains the
+  reset token. Anyone who could read the log could take over that account.
+  The token is now only ever logged in development, where it is the only way
+  to reach the link.
+- logger.redact() existed but nothing called it. It now covers reset URLs,
+  api keys and passphrases, and it no longer redacts a bare "code" - the
+  provider error codes in the worker logs are diagnostics, and redacting
+  them would make the logs useless.
+- Added logger.scrubMessage(), which strips the query string of a URL, an
+  explicit OAuth code and anything that looks like a long opaque token from
+  a free-text message. The Google OAuth callback uses it: an exchange
+  failure carries the authorization code.
+- tests/unit/logger.test.ts locks all of this in (6 tests).
+
+Correctness
+- src/worker/processJob.ts had a U+FFFD replacement character in a comment
+  (a mangled em dash). scripts/check-encoding.cjs now scans the whole tree
+  for that and for UTF-8-read-as-Latin-1 damage.
+
+Tooling
+- scripts/validate-all.mjs runs the whole gate in one go: schema, migration
+  status, types, lint, unit and integration tests, the production build, the
+  deployment bundle, the secret scan, the log-leak scan, the encoding scan
+  and the health/login/API smoke test.
+- scripts/check-log-leaks.cjs finds logger calls that could write a
+  credential and fails if one is not redacted.
+- scripts/check-encoding.cjs finds encoding damage.
+- Supabase tooling: provision-supabase.mjs (sets the database password,
+  finds the pooler username, writes the connection string to the gitignored
+  files), set-db-password.mjs, seed-supabase.mjs, audit-supabase-schema.mjs,
+  verify-supabase-schema.mjs, rotate-app-secrets.mjs.
+- The integration suite must not run against a transaction pooler: it opens
+  many transactions at once on purpose, and a pooler cannot serve them. The
+  test database now uses the direct endpoint with connection_limit=20.
+
+Seed
+- The seed now creates a client-portal account (client@example.test) with
+  access to the demo campaign, so the portal can be tried immediately.
+
+Verified: 137 unit tests pass, typecheck and lint are clean, the migration
+status reports the database in sync, and the health/login/dashboard checks
+pass against the live Supabase database.

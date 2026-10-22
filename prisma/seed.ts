@@ -235,9 +235,37 @@ async function main() {
   }
   console.log("✓ suppression list seeded");
 
+  // --- Client portal account ------------------------------------------------
+  // A client account with access to the demo campaign, so the portal at
+  // /portal/login can be tried straight away.
+  const clientEmail = process.env.SEED_CLIENT_EMAIL ?? "client@example.test";
+  const clientPassword = process.env.SEED_CLIENT_PASSWORD ?? "Client-Password-123!";
+  const clientHash = await hashPassword(clientPassword);
+
+  const client = await prisma.client.upsert({
+    where: { email: clientEmail },
+    create: {
+      userId: user.id,
+      email: clientEmail,
+      passwordHash: clientHash,
+      name: "Demo Client",
+      company: "Analytical Engines",
+      isActive: true,
+    },
+    update: { isActive: true, name: "Demo Client" },
+  });
+
+  // Access is explicit: a client only sees the campaigns assigned to them.
+  await prisma.clientCampaignAccess.upsert({
+    where: { clientId_campaignId: { clientId: client.id, campaignId: campaign.id } },
+    create: { clientId: client.id, campaignId: campaign.id },
+    update: {},
+  });
+  console.log(`✓ client ${client.email} with access to "${campaign.name}"`);
+
   console.log("\nSeed complete.");
-  console.log(`  Login:    ${email}`);
-  console.log(`  Password: ${password}`);
+  console.log(`  Admin login:  ${email} / ${password}`);
+  console.log(`  Client login: ${clientEmail} / ${clientPassword}`);
   console.log("  Change the password and never reuse these values outside local dev.");
 }
 

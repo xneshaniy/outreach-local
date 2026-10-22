@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { handleApi, json } from "@/lib/http";
 import { enforceRateLimit, authLimitKey } from "@/lib/ratelimit";
 import { env } from "@/lib/env";
-import { logger } from "@/lib/logger";
+import { logger, redact } from "@/lib/logger";
 import { z } from "zod";
 
 /**
@@ -60,7 +60,16 @@ export const POST = handleApi(async (req: NextRequest) => {
     });
 
     resetUrl = `${env.appUrl}/reset-password?token=${encodeURIComponent(token)}`;
-    logger.info("Password reset requested", { email: user.email, resetUrl });
+    // The reset token is a credential: anyone who reads the log could take it
+    // and reset that account's password. It is only ever logged in
+    // development, where it is the only way to get at the link.
+    logger.info(
+      "Password reset requested",
+      redact({
+        email: user.email,
+        resetUrl: env.nodeEnv === "development" ? resetUrl : "[redacted]",
+      }),
+    );
   }
 
   return json({

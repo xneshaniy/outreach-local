@@ -4,7 +4,7 @@ import { google } from "googleapis";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { encryptSecret } from "@/lib/crypto";
-import { logger } from "@/lib/logger";
+import { logger, scrubMessage } from "@/lib/logger";
 import { audit } from "@/lib/audit";
 import { tokenAad } from "@/lib/email/gmail";
 import { requireUser } from "@/lib/auth/guards";
@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
     const res = await oauth2.getToken(code);
     tokens = res.tokens;
   } catch (err) {
-    logger.warn("Google token exchange failed", { error: (err as Error).message });
+    logger.warn("Google token exchange failed", { error: scrubMessage((err as Error).message) });
     return fail("token_exchange_failed");
   }
 
@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
     const verified = (info.data as { verified_email?: boolean }).verified_email;
     if (email && verified === false) return fail("email_not_verified");
   } catch (err) {
-    logger.warn("Failed to fetch Google profile", { error: (err as Error).message });
+    logger.warn("Failed to fetch Google profile", { error: scrubMessage((err as Error).message) });
     return fail("profile_fetch_failed");
   }
   if (!email) return fail("no_email");
@@ -151,7 +151,7 @@ export async function GET(req: NextRequest) {
       metadata: { email: normalized },
     });
   } catch (err) {
-    logger.error("Failed to store Google account", { error: (err as Error).message });
+    logger.error("Failed to store Google account", { error: scrubMessage((err as Error).message) });
     return fail("storage_failed");
   }
 

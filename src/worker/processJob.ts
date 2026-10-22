@@ -588,7 +588,7 @@ async function markAmbiguous(
       where: { id: job.id },
       data: { status: "AMBIGUOUS", attempts: attemptNumber, ambiguousSince: new Date(), lastError: message, errorCode: code },
     }),
-    // A follow-up job has no campaign recipient � the empty id matches nothing.
+    // A follow-up job has no campaign recipient - the empty id matches nothing.
     prisma.campaignRecipient.updateMany({ where: { id: job.campaignRecipientId ?? "" }, data: { status: "SENDING", lastError: message } }),
   ]);
   logger.warn("Job marked AMBIGUOUS — reconciliation required", { jobId: job.id, code });
