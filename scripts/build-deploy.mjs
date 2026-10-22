@@ -252,7 +252,7 @@ if (missing.length > 0) {
 }
 
 console.log("==> Building Next.js (standalone output)");
-run("npx next build");
+run("NODE_OPTIONS='--max-old-space-size=4096 --max-semi-space-size=64' npx next build");
 
 console.log("==> Building worker bundle");
 run("npm run build:worker");

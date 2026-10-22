@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/build.mjs",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/worker/index.cjs --packages=external",
+    "build:worker": "NODE_OPTIONS='--max-old-space-size=2048' esbuild src/worker/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/worker/index.cjs --packages=external",
     "build:deploy": "node scripts/build-deploy.mjs",
     "build:host": "node scripts/build-on-host.mjs",
     "start": "node start.js",

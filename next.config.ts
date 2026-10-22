@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "12mb",
     },
+    // Limit build concurrency to avoid resource exhaustion on constrained hosts
+    workerThreads: false,
+    cpus: 1,
   },
   async headers() {
     return [
