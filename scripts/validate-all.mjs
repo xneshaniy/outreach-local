@@ -108,6 +108,9 @@ run("Encoding scan", "node scripts/check-encoding.cjs", [], { quiet: true });
 // 7. Health + auth smoke test
 run("Health, login and API smoke test", "node scripts/e2e-supabase-check.cjs", [], { quiet: true, env });
 
+// 8. Production safety: unauthorised access, forged tokens, CSRF, dry run
+run("Production safety checks", "node scripts/production-safety-check.cjs", [], { quiet: true, env });
+
 // --- summary ---------------------------------------------------------------
 console.log("\n" + "=".repeat(72));
 console.log("SUMMARY");
