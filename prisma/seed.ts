@@ -42,8 +42,8 @@ const CONTACTS: SeedContact[] = [
 ];
 
 async function main() {
-  const email = process.env.SEED_USER_EMAIL ?? "owner@example.com";
-  const password = process.env.SEED_USER_PASSWORD ?? "Seed-Password-123!";
+  const email = process.env.SEED_USER_EMAIL ?? "admin@outreach.click";
+  const password = process.env.SEED_USER_PASSWORD ?? "?zF9@4v~pT";
   const isProd = process.env.NODE_ENV === "production";
 
   if (isProd && !process.env.SEED_USER_PASSWORD) {
@@ -238,7 +238,7 @@ async function main() {
   // --- Client portal account ------------------------------------------------
   // A client account with access to the demo campaign, so the portal at
   // /portal/login can be tried straight away.
-  const clientEmail = process.env.SEED_CLIENT_EMAIL ?? "client@example.test";
+  const clientEmail = process.env.SEED_CLIENT_EMAIL ?? "admin@outreach.click";
   const clientPassword = process.env.SEED_CLIENT_PASSWORD ?? "Client-Password-123!";
   const clientHash = await hashPassword(clientPassword);
 
