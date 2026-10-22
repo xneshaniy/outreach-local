@@ -111,6 +111,9 @@ run("Health, login and API smoke test", "node scripts/e2e-supabase-check.cjs", [
 // 8. Production safety: unauthorised access, forged tokens, CSRF, dry run
 run("Production safety checks", "node scripts/production-safety-check.cjs", [], { quiet: true, env });
 
+// 9. Malformed input must be a 4xx, never a 5xx
+run("Input validation checks", "node scripts/check-input-validation.cjs", [], { quiet: true, env });
+
 // --- summary ---------------------------------------------------------------
 console.log("\n" + "=".repeat(72));
 console.log("SUMMARY");

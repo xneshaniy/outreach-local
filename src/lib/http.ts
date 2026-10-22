@@ -7,6 +7,7 @@ import { logger } from "./logger";
  * Wrap an API route handler with consistent error handling.
  * - ApiError -> mapped JSON error
  * - ZodError -> 400 with field details
+ * - a malformed JSON body -> 400
  * - anything else -> 500 (details logged, never leaked to the client)
  */
 export function handleApi<Args extends unknown[]>(
@@ -28,6 +29,12 @@ export function handleApi<Args extends unknown[]>(
           { status: 400 },
         );
       }
+      if (isJsonParseError(err)) {
+        return NextResponse.json(
+          { error: { code: "INVALID_JSON", message: "The request body is not valid JSON." } },
+          { status: 400 },
+        );
+      }
       logger.error("Unhandled API error", {
         error: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
@@ -38,6 +45,22 @@ export function handleApi<Args extends unknown[]>(
       );
     }
   };
+}
+
+/**
+ * Was this thrown by parsing the request body?
+ *
+ * `req.json()` rejects a malformed body with a SyntaxError. That is a client
+ * mistake, and it used to fall through to the 500 branch - so a broken
+ * request looked exactly like a server crash.
+ */
+export function isJsonParseError(err: unknown): boolean {
+  if (!(err instanceof SyntaxError)) return false;
+  const message = err.message.toLowerCase();
+  // Node: "Expected property name or '}' in JSON at position 1" and
+  // "Unexpected token 'n', \"{not json\" is not valid JSON".
+  // Browsers and other runtimes use their own wording, so match loosely.
+  return /json|unexpected token|unexpected end of/.test(message);
 }
 
 export function json(data: unknown, init?: ResponseInit) {
