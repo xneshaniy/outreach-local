@@ -471,6 +471,11 @@ consumed, no follow-ups scheduled).
 migrations and runs both suites plus the Docker build on every push.
 ## Deployment
 
+**Going live?** Start with [`docs/GO-LIVE.md`](docs/GO-LIVE.md) — it is the
+production checklist: what has to be true, the exact hosting build settings,
+the environment variables, the dry-run gate, and the credentials that were
+exposed and must be rotated.
+
 **Hostinger (shared hosting)?** Follow [`docs/HOSTINGER.md`](docs/HOSTINGER.md)
 — it has the exact hPanel settings, the environment variables, and the
 migration step.
@@ -489,6 +494,19 @@ version:
 `deploy/` (with the Prisma engine compiled for the machine it is built on),
 and `node deploy/start.js` runs the web app and the sender worker together.
 
+### One command to check everything
+
+```bash
+node scripts/validate-all.mjs          # everything
+node scripts/validate-all.mjs --quick  # skip the long test suite
+```
+
+It runs the Prisma schema check, the migration status, the type check, the
+lint, the unit and integration suites, the production build, the deployment
+bundle and its completeness check, the secret scan, the log-leak scan, the
+encoding scan, and a health/login/dashboard smoke test against the configured
+database — then prints one summary.
+
 `.github/workflows/ci.yml` lints, typechecks, runs the secret scan, runs unit
 tests, spins up PostgreSQL, applies migrations, runs the integration suite,
 builds the app and the deployment bundle, checks the bundle is complete, and
@@ -505,7 +523,14 @@ builds the Docker image.
   provider.
 - Rate limiting is a fixed-window counter stored in Postgres so it works across
   instances.
-- No secrets are committed; `.env`, `.env.*` (except the examples) are ignored.
+- **Nothing that can be used as a credential reaches the log.** The
+  password-reset link is only logged in development, `logger.redact()` strips
+  sensitive keys, and `logger.scrubMessage()` removes a URL query string, an
+  OAuth code and any long opaque token from a free-text message.
+  `scripts/check-log-leaks.cjs` fails the build if a logger call can write one.
+- No secrets are committed; `.env`, `.env.*` (except the examples) are ignored,
+  and `scripts/check-secrets.cjs` fails the build if a tracked file contains
+  one.
 
 ## What is verified and what is not
 

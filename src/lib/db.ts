@@ -113,6 +113,18 @@ function createClient() {
   const base = new PrismaClient({
     log: env.nodeEnv === "development" ? ["warn", "error"] : ["error"],
     datasourceUrl: normalizeDatabaseUrl(env.databaseUrl),
+    // A contended quota reservation serialises on a row lock, so several
+    // transactions queue up behind each other. With Prisma's default
+    // 5-second interactive-transaction timeout the queued ones were killed
+    // by the timeout instead of being told the quota was reached - which
+    // turned a healthy, correctly-contended queue into a burst of failures.
+    //
+    // maxWait is how long a transaction may wait for a connection from the
+    // pool; timeout is how long it may run once it has one.
+    transactionOptions: {
+      maxWait: 15_000,
+      timeout: 30_000,
+    },
   });
 
   // Retry transient connection failures for every model operation, so a

@@ -38,7 +38,9 @@ const env = {
   DATABASE_URL: url,
   AUTH_SECRET: process.env.AUTH_SECRET ?? local.AUTH_SECRET ?? "e2e-auth-secret-0123456789abcdefghijklmnop",
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY ?? local.ENCRYPTION_KEY ?? "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
-  APP_URL: process.env.APP_URL ?? local.APP_URL ?? APP_URL,
+  // The local address, so the requests below are same-origin and the CSRF
+  // guard is exercised the way it will be in production.
+  APP_URL,
   PORT: String(PORT),
   HOSTNAME: "0.0.0.0",
   NODE_ENV: "production",
