@@ -1,0 +1,26 @@
+fix: a retried claim must not take more than its batch limit
+
+The queue test failed intermittently: an emergency stop cancelled 0 jobs
+instead of 1, because the claim had taken BOTH jobs.
+
+The cause was in claimDueJobs. The claim is a single atomic
+
+    UPDATE "SendJob" ... WHERE j.id IN (SELECT id ... LIMIT n FOR UPDATE SKIP LOCKED)
+
+and it was wrapped in dbRetry. The comment claimed that a retry "can never
+double-claim: the statement only matches rows that are still QUEUED" - and
+while a retry can never claim the SAME job twice, it can claim a DIFFERENT
+one. A retry after a lost response therefore took a second job and broke
+the batch limit.
+
+That matters in production, not only in the test: the worker would process
+more than its configured batch, and the "n concurrent workers claim disjoint
+batches" property would not hold.
+
+The claim is now attempted once. Losing a claim is harmless by design: the
+job stays CLAIMED with a lease, and when the lease expires
+reclaimAbandonedJobs() requeues it. The worker's tick already catches a
+failed claim and tries again on the next poll, so nothing is lost.
+
+Verified: the queue suite passes (7/7) and the emergency-stop test now
+sees exactly one cancelled job.

@@ -113,26 +113,30 @@ export async function enqueueFollowUpJob(
  * Uses FOR UPDATE SKIP LOCKED so parallel workers claim disjoint sets.
  */
 export async function claimDueJobs(workerId: string, limit = env.workerBatchSize, leaseSeconds = env.workerLeaseSeconds): Promise<ClaimedJob[]> {
-  // The claim is a single atomic UPDATE ... FOR UPDATE SKIP LOCKED, so a
-  // retry after a transient connection failure can never double-claim: the
-  // statement only matches rows that are still QUEUED.
-  const claimed = await dbRetry(() =>
-    prisma.$queryRaw<Array<{ id: string }>>`
-      UPDATE "SendJob" AS j
-      SET "status" = 'CLAIMED',
-          "claimedAt" = now(),
-          "claimedBy" = ${workerId},
-          "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}),
-          "updatedAt" = now()
-      WHERE j.id IN (
-        SELECT id FROM "SendJob"
-        WHERE "status" = 'QUEUED' AND "scheduledAt" <= now()
-        ORDER BY "scheduledAt" ASC
-        LIMIT ${limit}
-        FOR UPDATE SKIP LOCKED
-      )
-      RETURNING j.id`,
-  );
+  // The claim is a single atomic UPDATE ... FOR UPDATE SKIP LOCKED, so two
+  // workers can never claim the same job.
+  //
+  // It is deliberately NOT wrapped in dbRetry. A retry re-runs the statement,
+  // and the statement matches whichever rows are still QUEUED - so a retry
+  // after a lost response would claim a SECOND job and take more than the
+  // batch limit. Losing a claim is harmless: the job stays CLAIMED with a
+  // lease, and when the lease expires reclaimAbandonedJobs() requeues it.
+  // Over-claiming is not harmless, so the claim is attempted once.
+  const claimed = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "SendJob" AS j
+    SET "status" = 'CLAIMED',
+        "claimedAt" = now(),
+        "claimedBy" = ${workerId},
+        "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds}),
+        "updatedAt" = now()
+    WHERE j.id IN (
+      SELECT id FROM "SendJob"
+      WHERE "status" = 'QUEUED' AND "scheduledAt" <= now()
+      ORDER BY "scheduledAt" ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING j.id`;
 
   if (claimed.length === 0) return [];
 
