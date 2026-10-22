@@ -65,10 +65,31 @@ async function req(pathname, options = {}) {
   return { status: res.status, text, headers: res.headers };
 }
 
-(async () => {
-  await wait(14000);
+/**
+ * Wait for the health endpoint instead of sleeping a fixed amount of time.
+ *
+ * A cold start has to load the standalone server, initialise the Prisma
+ * client and open a connection to a remote database - which can take longer
+ * than any fixed sleep, especially while a build is running.
+ */
+async function waitForHealth(timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    try {
+      const res = await req("/api/health");
+      if (res.status === 200) return res;
+      last = `${res.status} ${res.text.slice(0, 120)}`;
+    } catch (err) {
+      last = String(err?.cause?.code ?? err.message);
+    }
+    await wait(1000);
+  }
+  throw new Error(`The app did not become healthy within ${timeoutMs}ms. Last: ${last}`);
+}
 
-  const health = await req("/api/health");
+(async () => {
+  const health = await waitForHealth();
   console.log("=== health ===");
   console.log(`  ${health.status}  ${health.text.slice(0, 220)}`);
 
