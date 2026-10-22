@@ -370,7 +370,7 @@ to anyone holding the publishable key.
 ## A6. Verify
 
 ```bash
-curl -s https://silver-sparrow-530238.hostingersite.com/api/health
+curl -s https://ghostwhite-parrot-522091.hostingersite.com/api/health
 ```
 
 Expected:
