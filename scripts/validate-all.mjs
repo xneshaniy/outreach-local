@@ -114,6 +114,9 @@ run("Production safety checks", "node scripts/production-safety-check.cjs", [], 
 // 9. Malformed input must be a 4xx, never a 5xx
 run("Input validation checks", "node scripts/check-input-validation.cjs", [], { quiet: true, env });
 
+// 10. The bundle must start in every layout a hosting panel might produce
+run("Hosting layout simulation", "node scripts/simulate-hostinger-layouts.cjs", [], { quiet: true, env });
+
 // --- summary ---------------------------------------------------------------
 console.log("\n" + "=".repeat(72));
 console.log("SUMMARY");

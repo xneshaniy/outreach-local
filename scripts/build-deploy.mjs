@@ -305,6 +305,25 @@ for (const file of [".htaccess", "start.sh", "start.js"]) {
   }
 }
 
+// The launcher exists in three places - the template, the repository root and
+// the bundle - and they must behave identically. A panel may use any of them,
+// so a divergence would mean a deployment that starts one way locally and
+// another way in production.
+{
+  const template = fs.readFileSync(path.join(templates, "start.js"), "utf8");
+  const rootLauncher = path.join(root, "start.js");
+  if (fs.existsSync(rootLauncher)) {
+    const rootText = fs.readFileSync(rootLauncher, "utf8");
+    if (rootText !== template) {
+      console.error("");
+      console.error("ERROR: start.js and scripts/templates/start.js have diverged.");
+      console.error("       Copy the template over start.js - they must be identical.");
+      process.exit(1);
+    }
+    console.log("    start.js matches the template");
+  }
+}
+
 // 5. Minimal package.json for the host.
 //
 //    The dependency list is generated from the packages that were actually

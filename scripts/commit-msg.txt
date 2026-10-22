@@ -1,0 +1,26 @@
+fix: the launcher finds the application by itself
+
+A hosting panel can lay the application out in more than one way, and
+there was no single entry point that worked in all of them: the repository
+root, the output directory, or one inside the other. The guide had to warn
+about "Cannot find module .../deploy/deploy/start.js" and tell you to
+change the start command.
+
+The launcher now looks for server/server.js and worker/index.cjs in the
+directory it is in, in ./deploy, and in the working directory - so it
+resolves the application wherever the panel put it. It also takes the port
+from -p <port> when PORT is not set, and does not need HOSTNAME.
+
+The launcher lives in three places - the template, the repository root and
+the bundle - and they must behave identically, or a deployment would start
+one way locally and another way in production. The build now compares them
+and fails if they have diverged.
+
+scripts/simulate-hostinger-layouts.cjs starts the bundle in five layouts -
+repository root, output directory, root as the output directory, the port
+passed as -p, and no HOSTNAME - and checks each one serves the health
+endpoint with the database up and the worker running. All five pass, and it
+is now part of node scripts/validate-all.mjs.
+
+Also added: .nvmrc (Node 22) and a Procfile, both of which a panel may
+read to work out how to run the application.

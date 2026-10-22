@@ -97,28 +97,32 @@ apply on their own. Two things make that work:
   generates the Prisma client with `npx prisma generate` — so it works even
   when the platform omitted devDependencies — then builds the worker and the
   app, and assembles the standalone output.
-- **`start.js` at the repository root** starts whatever was built: the
-  deployment bundle when `deploy/` exists, or the plain Next.js build
-  otherwise. The worker runs in both cases.
+- **The launcher finds the application by itself.** `start.js` looks for
+  `server/server.js` and `worker/index.cjs` in the directory it is in, in
+  `./deploy`, and in the working directory — so it works whether the panel
+  runs the repository root, the output directory, or one inside the other.
 
-So any of these entry points work:
+All of these are verified to serve the app with the database up and the
+worker running (`scripts/simulate-hostinger-layouts.cjs`):
 
 | Entry file | Start command |
 | --- | --- |
 | `start.js` | `node start.js` |
-| `server.js` | `node server.js` |
+| `start.js` | `node deploy/start.js` |
 | `deploy/start.js` | `node deploy/start.js` |
-| `server/server.js` | `node server/server.js` (web app only) |
+| `deploy/start.js` | `node start.js` (from inside `deploy/`) |
 
-The launcher takes the port from `PORT` in the environment, and also accepts
-`-p <port>` on the command line — so a panel that runs
-`npm run start -- -p $PORT` works as well as one that sets `PORT`.
+The port is taken from `PORT`, and `-p <port>` on the command line is also
+accepted — so a panel that runs `npm run start -- -p $PORT` works too. The
+launcher does not need `HOSTNAME` to be set.
 
 **If the log says `Cannot find module .../deploy/deploy/start.js`**
 
 That means the platform ran the command with the working directory already
 set to the output directory. Change the **Start command** to `node start.js`
-and redeploy. (`scripts/simulate-hostinger.ps1` verifies all three layouts.)
+and redeploy — the launcher now resolves the application by itself, so it
+works in every layout. (`scripts/simulate-hostinger-layouts.cjs` verifies all
+five.)
 
 ## A3. Environment variables
 

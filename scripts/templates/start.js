@@ -1,24 +1,32 @@
 /**
- * Single entry point for a hosting platform that starts exactly one process.
+ * The launcher.
  *
- * Hostinger's "Setup Node.js App" runs one entry file and restarts it on
- * deploy. This application needs two processes:
+ * This file is used in two places: the repository root (start.js) and the
+ * deployment bundle (deploy/start.js). They must stay byte-identical - the
+ * build checks that and fails if they diverge, because a panel may use
+ * either one and a divergence would mean a deployment that starts one way
+ * locally and another way in production.
+ *
+ * The application needs two processes:
  *
  *   - the Next.js standalone server (the UI and the API)
  *   - the sender worker (claims queued jobs and hands them to the provider)
  *
- * Without the worker, nothing is ever sent. Instead of asking the operator to
- * supervise a second process with pm2, this launcher starts the worker as a
- * child process and then brings up the web server in this same process. The
- * platform's restart button therefore restarts BOTH, and they always share
- * the same environment.
+ * Without the worker, nothing is ever sent. Hostinger's "Setup Node.js App"
+ * runs ONE entry file, so this starts the worker as a child process and then
+ * brings up the web server in the same process. The platform's restart button
+ * therefore restarts both, and they always share the same environment.
  *
- * The bundle can be started from the repository root (`node deploy/start.js`)
- * or from inside the bundle directory (`node start.js`), and the working
- * directory may be either one - so the bundle root is resolved by looking for
- * the files that must be there.
+ * It is written to work no matter how the hosting panel lays things out,
+ * because a panel may:
  *
- * Set RUN_WORKER=false to run the web app only (for example while debugging).
+ *   - run the repository root, where the bundle is in ./deploy
+ *   - run the output directory, where server/ and worker/ are right here
+ *   - run the repository root as the output directory
+ *
+ * So the bundle root is found by looking for the files that must be in it.
+ *
+ * Set RUN_WORKER=false to run the web app only.
  */
 const fs = require("node:fs");
 const path = require("node:path");
@@ -29,16 +37,21 @@ let shuttingDown = false;
 
 /** Log with a prefix so the two processes are distinguishable in one log. */
 function log(message, ...rest) {
-  console.log(`[launcher] ${message}`, ...rest);
+  console.log("[start]", message, ...rest);
 }
 
 /**
- * Find the directory that holds server/ and worker/.
+ * The directory that holds server/ and worker/.
  *
  * @returns {string} the bundle root
  */
 function findBundleRoot() {
-  const candidates = [__dirname, path.join(__dirname, ".."), process.cwd()];
+  const candidates = [
+    __dirname,
+    path.join(__dirname, "deploy"),
+    process.cwd(),
+    path.join(process.cwd(), "deploy"),
+  ];
 
   for (const dir of candidates) {
     if (
@@ -50,16 +63,13 @@ function findBundleRoot() {
   }
 
   console.error(
-    "[launcher] Could not find the deployment bundle.\n" +
-      "[launcher] Expected server/server.js and worker/index.cjs next to this file.\n" +
-      `[launcher] Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
+    "[start] Could not find the application.\n" +
+      "[start] Expected server/server.js and worker/index.cjs in one of:\n" +
+      candidates.map((c) => `  - ${c}`).join("\n") +
+      "\n[start] Build it first:  npm run build:host",
   );
   process.exit(1);
 }
-
-const ROOT = findBundleRoot();
-const WORKER_ENTRY = path.join(ROOT, "worker", "index.cjs");
-const SERVER_ENTRY = path.join(ROOT, "server", "server.js");
 
 /**
  * The port to listen on.
@@ -77,6 +87,10 @@ function resolvePort(argv) {
   return "3000";
 }
 
+const ROOT = findBundleRoot();
+const WORKER_ENTRY = path.join(ROOT, "worker", "index.cjs");
+const SERVER_ENTRY = path.join(ROOT, "server", "server.js");
+
 if (!process.env.PORT) {
   process.env.PORT = resolvePort(process.argv.slice(2));
   log(`no PORT in the environment - using ${process.env.PORT} from the command line`);
@@ -92,6 +106,10 @@ if (process.env.RUN_WORKER !== "false") {
     worker = spawn(process.execPath, [WORKER_ENTRY], {
       stdio: "inherit",
       env: process.env,
+      // The standalone server changes the process directory to its own folder
+      // when it is required, so the worker is given the bundle root
+      // explicitly - otherwise it would look for .env in the wrong place.
+      cwd: ROOT,
     });
 
     worker.on("error", (err) => {
@@ -125,7 +143,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(signal, () => shutdown(signal));
 }
 
-// The standalone server starts as soon as it is required.
 log(`bundle root: ${ROOT}`);
-log(`starting the web server on port ${process.env.PORT ?? 3000}...`);
+log(`starting the web server on port ${process.env.PORT}...`);
+// The standalone server starts as soon as it is required.
 require(SERVER_ENTRY);
