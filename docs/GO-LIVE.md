@@ -194,6 +194,21 @@ Ambiguous jobs — a provider call that timed out *after* submission — are
 never retried automatically, because a retry could send twice. They appear in
 the **Queue** page and can be resolved by hand.
 
+### What was hardened for production
+
+- **A retried claim cannot take more than its batch limit.** The claim is a
+  single atomic `UPDATE … FOR UPDATE SKIP LOCKED`; it is attempted once, so a
+  lost response cannot make a worker claim a second job. A lost claim is
+  harmless: the job keeps its lease and is requeued when the lease expires.
+- **Contended transactions have room to finish.** A quota reservation
+  serialises on a row lock, and Prisma's default 5-second transaction timeout
+  was killing the queued transactions. The client now allows 30 seconds, so a
+  burst of sends produces quota errors instead of timeouts.
+- **Nothing that can be used as a credential reaches the log.** The
+  password-reset link is only logged in development; `logger.redact()` and
+  `logger.scrubMessage()` strip the rest. `scripts/check-log-leaks.cjs`
+  fails the build if that ever regresses.
+
 ---
 
 ## 8. Credentials that were exposed and must be rotated
@@ -217,3 +232,70 @@ the workstation. Paste the current values into the hosting panel.
 The Supabase personal access token, the Supabase secret key and the Hostinger
 token still need rotating — they are account-level credentials, and the
 application does not need any of them.
+
+---
+
+## 9. The one remaining blocker: Hostinger authorization
+
+The application is built, tested, pushed and ready. The **deployment itself**
+needs one authorisation step that only the account owner can perform.
+
+### What was tried
+
+| Attempt | Result |
+| --- | --- |
+| The Hostinger MCP at `https://mcp.hostinger.com` with the API token as `Authorization: Bearer …` | `401 Unauthenticated` |
+| The token as a raw `Authorization` header, as `X-Api-Key`, and as a query parameter | `401 Unauthenticated` |
+| The Hostinger REST API (`api.hostinger.com`) with the token | `530` — the API host is unreachable from here |
+| The MCP OAuth flow | **works**, and produces a sign-in link |
+
+The server's own response says what it wants:
+
+```
+www-authenticate: Bearer realm="mcp",
+  resource_metadata="https://mcp.hostinger.com/.well-known/oauth-protected-resource"
+```
+
+```json
+{
+  "resource": "https://mcp.hostinger.com",
+  "authorization_servers": ["https://auth.hostinger.com"],
+  "scopes_supported": ["mcp:use"]
+}
+```
+
+So the MCP server uses **OAuth 2.1 with Dynamic Client Registration**. The
+pasted token is an API token, not an MCP credential.
+
+### How to finish it
+
+In the opencode client:
+
+```
+/mcps
+```
+
+Select **hostinger** and sign in. The browser opens
+`auth.hostinger.com`, you approve the `mcp:use` scope, and the credential is
+stored. After that the Hostinger deployment tools appear and the deployment
+can be driven from here.
+
+**Or, without the MCP at all** — the repository is already in the state the
+hosting panel needs, so a redeploy from the panel is enough:
+
+1. **Redeploy** from the deployment panel (it pulls `main` and runs the build).
+2. **Environment variables** → **Import .env** → upload `.env.hostinger`
+   from the workstation. It holds all 23 values, none blank.
+3. The build settings are: `npm ci --include=dev` · `npm run build:host` ·
+   output `deploy` · entry `start.js` · start `node deploy/start.js`.
+
+### How to confirm it worked
+
+```bash
+curl -s https://ghostwhite-parrot-522091.hostingersite.com/api/health
+```
+
+→ `{"status":"ok","database":"up",...}`
+
+Then sign in at `/login` with the seeded owner account and check
+`/dashboard` and `/portal/login`.
